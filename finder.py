@@ -359,7 +359,7 @@ def main():
     if len(new_matches) > MAX_ALERTS_PER_RUN:
         notify_text("More car matches", f"{len(new_matches) - MAX_ALERTS_PER_RUN} more matches this run. "
                                         "See MATCHES.md in the car-finder-ee repo.")
-    if failures and now.hour == 8:
+    if len(failures) == len(SOURCES) and now.hour == 8:
         notify_text("Car finder: site problem", f"Could not search: {', '.join(failures)}")
 
     # Forget listings first seen over a year ago so the file stays small.
