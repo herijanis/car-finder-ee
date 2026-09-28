@@ -30,7 +30,8 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Search
         env:
-          NTFY_TOPIC: ${{ inputs.dry_run && '' || secrets.NTFY_TOPIC }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DRY_RUN: ${{ inputs.dry_run }}
           RUN_ALL_SOURCES: ${{ github.event_name == 'workflow_dispatch' }}
         run: python finder.py
       - name: Save what was seen

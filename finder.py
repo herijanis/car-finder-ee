@@ -32,7 +32,8 @@ SEARCH_TERMS = ["audi a4", "audi a6", "passat"]
 ROOT = Path(__file__).parent
 SEEN_FILE = ROOT / "seen.json"
 MATCHES_FILE = ROOT / "MATCHES.md"
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+DRY_RUN = os.environ.get("DRY_RUN") == "true"
+NTFY_TOPIC = "" if DRY_RUN else os.environ.get("NTFY_TOPIC", "")
 MAX_ALERTS_PER_RUN = 15
 DETAIL_FETCH_LIMIT = 400   # per source per run, keeps the first run polite
 DELAY = 1.0                # seconds between requests to the same site
@@ -340,6 +341,9 @@ def main():
         found = 0
         for car in cars:
             ok, unknown = check(car)
+            if not ok and car.get("model") and car.get("year") and 1996 <= car["year"] <= 2004:
+                print(f"  near miss: {car['year']} {car['model']} body={car.get('body')} fuel={car.get('fuel')} "
+                      f"gearbox={car.get('gearbox')} kw={car.get('kw')} km={car.get('km')} {car['url']}")
             entry = {"first_seen": now.isoformat(), "match": ok}
             if ok:
                 found += 1
