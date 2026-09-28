@@ -312,11 +312,11 @@ def notify(car, unknown):
     if not NTFY_TOPIC:
         print("  (NTFY_TOPIC not set, not sending)")
         return
-    title = f"{car.get('year', '')} {car['model']}".strip()
+    title = f"ALERT: {car.get('year', '')} {car['model']} found".replace("  ", " ")
     requests.post(
         f"https://ntfy.sh/{NTFY_TOPIC}",
         data=describe(car, unknown).encode("utf-8"),
-        headers={"Title": title.encode("utf-8"), "Click": car["url"], "Tags": "red_car", "Priority": "high"},
+        headers={"Title": title.encode("utf-8"), "Click": car["url"], "Tags": "rotating_light,red_car", "Priority": "urgent"},
         timeout=20,
     )
 
