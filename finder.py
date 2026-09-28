@@ -7,6 +7,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -96,14 +97,22 @@ def norm_body(text):
     return None
 
 
+# Sellers often write mileage without "km": "Kella peal 391000", "läbisõit 250t", "odomeeter 180 tuh".
+KM_WORDS_RE = re.compile(
+    r"(?:läbisõit|labisoit|kella\s+peal|kellal|näit|odomeeter|sõitnud|mileage)\D{0,15}?"
+    r"(\d{1,3}(?:[\s. ]?\d{3})*)\s*(tkm|tuh|t\b|k\b)?", re.I)
+
+
 def parse_km(text):
-    m = KM_RE.search(text or "")
-    if not m:
-        return None
-    n = int(re.sub(r"\D", "", m.group(1)))
-    if m.group(2).lower().startswith(("tkm", "tuh")):
-        n *= 1000
-    return n
+    text = text or ""
+    if m := KM_RE.search(text):
+        n = int(re.sub(r"\D", "", m.group(1)))
+        return n * 1000 if m.group(2).lower().startswith(("tkm", "tuh")) else n
+    if m := KM_WORDS_RE.search(text):
+        n = int(re.sub(r"\D", "", m.group(1)))
+        # "391" next to a mileage word, or "391t"/"391k", means thousands
+        return n * 1000 if (m.group(2) or n < 1000) else n
+    return None
 
 
 def parse_int(text):
@@ -181,6 +190,8 @@ def okidoki(seen):
             if data:
                 specs.setdefault(name.get_text(" ", strip=True).lower(), data.get_text(" ", strip=True))
         title = (soup.find("h1") or soup.find("title")).get_text(" ", strip=True)
+        desc_el = soup.select_one(".item-description-text")
+        desc = desc_el.get_text(" ", strip=True) if desc_el else ""
         blob = " ".join([title] + [f"{k} {v}" for k, v in specs.items()])
         price_el = soup.select_one("[class*=price]")
         cars.append({
@@ -190,8 +201,8 @@ def okidoki(seen):
             "fuel": norm_fuel(specs.get("kütus")),
             "gearbox": norm_gearbox(specs.get("käigukast")),
             "body": norm_body(specs.get("keretüüp")),
-            "kw": int(m.group(1)) if (m := KW_RE.search(blob)) else None,
-            "km": parse_int(specs.get("läbisõit")),
+            "kw": int(m.group(1)) if (m := KW_RE.search(f"{blob} {desc}")) else None,
+            "km": parse_int(specs.get("läbisõit")) or parse_km(f"{title} {desc}"),
             "price": parse_int(price_el.get_text()) if price_el else None,
             "location": specs.get("asukoht"),
         })
@@ -223,8 +234,6 @@ def soov(seen):
         text = f"{title}\n{desc}"
         years = [int(y) for y in YEAR_RE.findall(title)] or [int(y) for y in YEAR_RE.findall(desc)]
         km = parse_km(text)
-        if km is None and (m := re.search(r"läbisõit\s*:?\s*([\d\s.]+)", text, re.I)):
-            km = parse_int(m.group(1))
         price = None
         if m := re.search(r"(\d[\d\s]{1,7})\s*(€|eur)", text, re.I):
             price = parse_int(m.group(1))
@@ -277,8 +286,12 @@ def autodiiler(seen):
 SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler}
 if os.environ.get("SOURCES"):
     SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}
-# autodiiler has no server-side filters, so reading it means ~100 pages; only do that every 6 hours.
-SLOW_SOURCES = {"autodiiler": 6}
+TALLINN = ZoneInfo("Europe/Tallinn")
+
+
+def in_search_hours(t):
+    """Search 08:00-23:00 Estonian time, so alerts never arrive at night."""
+    return 8 <= t.hour < 23 or (t.hour == 23 and t.minute < 30)
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +316,7 @@ def notify(car, unknown):
     requests.post(
         f"https://ntfy.sh/{NTFY_TOPIC}",
         data=describe(car, unknown).encode("utf-8"),
-        headers={"Title": title.encode("utf-8"), "Click": car["url"], "Tags": "red_car"},
+        headers={"Title": title.encode("utf-8"), "Click": car["url"], "Tags": "red_car", "Priority": "high"},
         timeout=20,
     )
 
@@ -327,16 +340,14 @@ def write_matches(seen):
 
 def main():
     seen = json.loads(SEEN_FILE.read_text(encoding="utf-8")) if SEEN_FILE.exists() else {}
-    first_run = not seen
     now = datetime.now(timezone.utc)
-    force_all = os.environ.get("RUN_ALL_SOURCES") == "true"
+    local = now.astimezone(TALLINN)
+    if not in_search_hours(local) and os.environ.get("RUN_ALL_SOURCES") != "true":
+        print(f"{local:%H:%M} in Estonia: outside 08:00-23:00, not searching")
+        return 0
 
     new_matches, failures = [], []
     for name, fn in SOURCES.items():
-        every = SLOW_SOURCES.get(name)
-        if every and not (first_run or force_all or now.hour % every == 0):
-            print(f"{name}: skipped this hour")
-            continue
         print(f"{name}: searching")
         try:
             cars = fn(seen)
@@ -365,7 +376,7 @@ def main():
     if len(new_matches) > MAX_ALERTS_PER_RUN:
         notify_text("More car matches", f"{len(new_matches) - MAX_ALERTS_PER_RUN} more matches this run. "
                                         "See MATCHES.md in the car-finder-ee repo.")
-    if len(failures) == len(SOURCES) and now.hour == 8:
+    if len(failures) == len(SOURCES) and local.hour == 9:
         notify_text("Car finder: site problem", f"Could not search: {', '.join(failures)}")
 
     # Forget listings first seen over a year ago so the file stays small.

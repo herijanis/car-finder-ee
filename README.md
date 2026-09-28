@@ -3,7 +3,7 @@
 Searches Estonian car listings every hour and sends new matches to my phone via ntfy.
 
 - **What it looks for:** the `CRITERIA` block at the top of `finder.py`.
-- **Sites:** okidoki.ee and soov.ee every hour, autodiiler.ee every 6 hours.
+- **Sites:** okidoki.ee and soov.ee from the home PC (Windows task "Car finder"), autodiiler.ee from GitHub. Both hourly, 08:00-23:00 Estonian time.
   auto24.ee and osta.ee block scripts, so use their own saved-search alerts.
 - **Current matches:** `MATCHES.md`.
 - **Run it now:** Actions tab → "Search for cars" → Run workflow.

@@ -2,7 +2,7 @@ name: Search for cars
 
 on:
   schedule:
-    - cron: "17 * * * *"   # every hour
+    - cron: "5 5-21 * * *"   # hourly; finder.py keeps it to 08:00-23:00 Estonian time
   workflow_dispatch:
     inputs:
       dry_run:
