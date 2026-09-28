@@ -30,10 +30,14 @@ CRITERIA = {
 SEARCH_TERMS = ["audi a4", "audi a6", "passat"]
 
 ROOT = Path(__file__).parent
-SEEN_FILE = ROOT / "seen.json"
-MATCHES_FILE = ROOT / "MATCHES.md"
+# GitHub runs one set of sites and the home PC another (some sites block GitHub),
+# so each place keeps its own memory of what it has already seen.
+SEEN_FILE = ROOT / os.environ.get("SEEN_FILE", "seen.json")
+MATCHES_FILE = ROOT / os.environ.get("MATCHES_FILE", "MATCHES.md")
 DRY_RUN = os.environ.get("DRY_RUN") == "true"
-NTFY_TOPIC = "" if DRY_RUN else os.environ.get("NTFY_TOPIC", "")
+TOPIC_FILE = ROOT / "ntfy_topic.txt"
+NTFY_TOPIC = "" if DRY_RUN else (
+    os.environ.get("NTFY_TOPIC") or (TOPIC_FILE.read_text().strip() if TOPIC_FILE.exists() else ""))
 MAX_ALERTS_PER_RUN = 15
 DETAIL_FETCH_LIMIT = 400   # per source per run, keeps the first run polite
 DELAY = 1.0                # seconds between requests to the same site
@@ -271,6 +275,8 @@ def autodiiler(seen):
 
 
 SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler}
+if os.environ.get("SOURCES"):
+    SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}
 # autodiiler has no server-side filters, so reading it means ~100 pages; only do that every 6 hours.
 SLOW_SOURCES = {"autodiiler": 6}
 
