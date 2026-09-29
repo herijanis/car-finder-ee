@@ -283,7 +283,55 @@ def autodiiler(seen):
     return cars
 
 
-SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler}
+def autoportaal(seen):
+    """Model pages list newest first, 20 per page; read pages until one has nothing new."""
+    base = "https://autoportaal.ee/et"
+    ids = {}
+    for slug in ("audi-a4", "audi-a6", "volkswagen-passat"):
+        for page in range(1, 11):
+            html = get(f"{base}/{slug}", params={"page": page}).text
+            page_ids = re.findall(r"kasutatud-autod/(\d+)", html)
+            fresh = [i for i in dict.fromkeys(page_ids) if f"autoportaal:{i}" not in seen]
+            ids.update((i, f"{base}/kasutatud-autod/{i}") for i in fresh)
+            if not fresh:
+                break
+    cars = []
+    for item_id, url in ids.items():
+        if len(cars) >= DETAIL_FETCH_LIMIT:
+            break
+        try:
+            soup = BeautifulSoup(get(url).text, "html.parser")
+        except requests.RequestException as e:
+            print(f"  autoportaal {item_id}: {e}")
+            continue
+        # Specs are rendered as a label line followed by its value line.
+        lines = [s.strip() for s in soup.get_text("\n").split("\n") if s.strip()]
+        spec = {}
+        for label, value in zip(lines, lines[1:]):
+            spec.setdefault(label.rstrip(":").lower(), value)
+        title_el = soup.select_one("#vehicleTitle") or soup.find("h1")
+        title = " ".join(title_el.get_text(" ", strip=True).split()) if title_el else ""
+        desc = " ".join(lines)
+        price = None
+        # The price sits right after a model-years line like "2014-2015", so don't let digits run together.
+        if m := re.search(r"(?<![\d-])(\d{1,3}(?:[  ]\d{3})+|\d{1,6})\s*€", desc[desc.find(title[:20]):]):
+            price = parse_int(m.group(1))
+        cars.append({
+            "key": f"autoportaal:{item_id}", "source": "autoportaal", "url": url, "title": title,
+            "model": model_of(title),
+            "year": int(m.group(1)) if (m := YEAR_RE.search(spec.get("esmareg.", ""))) else None,
+            "fuel": norm_fuel(spec.get("kütus")),
+            "gearbox": norm_gearbox(spec.get("käigukast")),
+            "body": norm_body(spec.get("keretüüp")),
+            "kw": parse_int(spec.get("võimsus")),
+            "km": parse_int(spec.get("läbisõit")),
+            "price": price,
+            "location": spec.get("asukoht"),
+        })
+    return cars
+
+
+SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal}
 if os.environ.get("SOURCES"):
     SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}
 TALLINN = ZoneInfo("Europe/Tallinn")
