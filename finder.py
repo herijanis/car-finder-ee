@@ -52,10 +52,16 @@ session.headers.update({
 
 
 def get(url, **kw):
-    time.sleep(DELAY)
-    r = session.get(url, timeout=30, **kw)
-    r.raise_for_status()
-    return r
+    # Sites occasionally drop a connection; retry a couple of times before giving up on the run.
+    for attempt in range(3):
+        time.sleep(DELAY * (1 + 5 * attempt))
+        try:
+            r = session.get(url, timeout=30, **kw)
+            r.raise_for_status()
+            return r
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == 2:
+                raise
 
 
 # ---------------------------------------------------------------------------
