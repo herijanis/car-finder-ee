@@ -24,7 +24,14 @@ CRITERIA = {
     "fuel": "diesel",
     "gearbox": "manual",
     "kw_max": 96,
+    "km_max": 250_000,
+}
+
+# Cars abroad cost a trip to fetch, so they must clear a higher bar.
+FOREIGN_CRITERIA = {
     "km_max": 200_000,
+    # the ad must actually state these; "not stated" is not good enough abroad
+    "required": ["year", "km", "fuel", "gearbox", "body"],
 }
 
 # Search terms per site (the model check above decides what actually matches).
@@ -145,6 +152,10 @@ def model_of(text):
 def check(car):
     """Return (is_match, list_of_unknown_fields). A known value that fails any rule rejects the car."""
     c = CRITERIA
+    if car.get("foreign"):
+        c = {**CRITERIA, **FOREIGN_CRITERIA}
+        if any(car.get(f) is None for f in c["required"]):
+            return False, []
     if not car.get("model"):
         return False, []
     unknown = []
@@ -337,7 +348,106 @@ def autoportaal(seen):
     return cars
 
 
-SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal}
+def autoscout24(seen):
+    """Europe-wide. The site filters by our criteria itself, so only real candidates come back."""
+    c, f = CRITERIA, FOREIGN_CRITERIA
+    filters = {
+        "atype": "C", "body": 5,  # cars, station wagon
+        "fregfrom": c["year_min"], "fregto": c["year_max"],
+        "fuel": "D", "gear": "M", "kmto": f["km_max"], "powerto": c["kw_max"], "powertype": "kw",
+        "sort": "age", "desc": 1, "ustate": "N,U",
+    }
+    cars = []
+    for slug in ("audi/a4", "audi/a6", "volkswagen/passat"):
+        for page in range(1, 6):
+            html = get(f"https://www.autoscout24.com/lst/{slug}", params={**filters, "page": page}).text
+            m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+            props = json.loads(m.group(1))["props"]["pageProps"]
+            for item in props.get("listings", []):
+                key = f"autoscout24:{item['id']}"
+                if key in seen:
+                    continue
+                v = item.get("vehicle", {})
+                details = " | ".join(d.get("data") or "" for d in item.get("vehicleDetails", []))
+                reg = item.get("tracking", {}).get("firstRegistration") or ""
+                country = (item.get("location") or {}).get("countryCode")
+                cars.append({
+                    "key": key, "source": "autoscout24", "foreign": True,
+                    "url": "https://www.autoscout24.com" + item.get("url", ""),
+                    "title": " ".join(x for x in (v.get("make"), v.get("model"), v.get("modelVersionInput")) if x),
+                    "model": model_of(f"{v.get('make', '')} {v.get('model', '')}"),
+                    "year": int(m.group(1)) if (m := YEAR_RE.search(reg)) else None,
+                    "fuel": norm_fuel(details), "gearbox": norm_gearbox(details),
+                    "body": "wagon",  # guaranteed by the body filter
+                    "kw": int(m.group(1)) if (m := KW_RE.search(details)) else None,
+                    "km": parse_int(v.get("mileageInKm")),
+                    "price": parse_int((item.get("price") or {}).get("priceFormatted")),
+                    "location": country,
+                })
+            if page >= props.get("numberOfPages", 1):
+                break
+    return cars
+
+
+def ss_lv(seen):
+    """Latvia. The results table already shows year, engine and mileage, so only open plausible ads."""
+    c, f = CRITERIA, FOREIGN_CRITERIA
+    base = "https://www.ss.lv"
+    candidates = {}
+    for cat in ("audi/a4", "audi/a6", "volkswagen/passat-b4", "volkswagen/passat-b5", "volkswagen/passat-variant"):
+        for page in range(1, 6):
+            path = f"/lv/transport/cars/{cat}/" + (f"page{page}.html" if page > 1 else "")
+            soup = BeautifulSoup(get(base + path).text, "html.parser")
+            rows = soup.select("tr[id^=tr_]")
+            fresh = 0
+            for row in rows:
+                a = row.select_one('a[href*="/msg/"]')
+                cells = [td.get_text(" ", strip=True) for td in row.find_all("td")]
+                if not a or len(cells) < 7:
+                    continue
+                key = f"ss.lv:{a['href'].rsplit('/', 1)[-1].removesuffix('.html')}"
+                if key in seen or key in candidates:
+                    continue
+                fresh += 1
+                year, engine, km_text = parse_int(cells[3]), cells[4], cells[5]
+                km = parse_km(km_text.replace("tūkst.", "tkm"))
+                # Rejected straight from the table: remember them so they are never opened.
+                if not (year and c["year_min"] <= year <= c["year_max"] and "D" in engine
+                        and km and km <= f["km_max"]):
+                    seen[key] = {"first_seen": datetime.now(timezone.utc).isoformat(), "match": False}
+                    continue
+                candidates[key] = base + a["href"]
+            if not rows or not fresh:
+                break
+    cars = []
+    for key, url in candidates.items():
+        try:
+            soup = BeautifulSoup(get(url).text, "html.parser")
+        except requests.RequestException as e:
+            print(f"  ss.lv {key}: {e}")
+            continue
+        field = lambda i: (el.get_text(" ", strip=True) if (el := soup.select_one(f"#tdo_{i}")) else "")
+        text = soup.get_text(" ", strip=True)
+        body = field(32).lower()
+        price_el = soup.select_one(".ads_price")
+        cars.append({
+            "key": key, "source": "ss.lv", "foreign": True, "url": url,
+            "title": f"{field(31)} {field(15)}".strip(),
+            "model": model_of(field(31)),
+            "year": int(m.group(1)) if (m := YEAR_RE.search(field(18))) else None,
+            "fuel": "diesel" if "dīzel" in field(15).lower() else norm_fuel(field(15)),
+            "gearbox": "manual" if "manuāl" in field(35).lower() else ("automatic" if field(35) else None),
+            "body": "wagon" if "universāl" in body else (("other" if body else None)),
+            "kw": int(m.group(1)) if (m := KW_RE.search(text)) else None,
+            "km": parse_int(field(16)),
+            "price": parse_int(price_el.get_text().split("€")[0]) if price_el else None,
+            "location": "LV",
+        })
+    return cars
+
+
+SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal,
+           "autoscout24": autoscout24, "ss.lv": ss_lv}
 if os.environ.get("SOURCES"):
     SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}
 TALLINN = ZoneInfo("Europe/Tallinn")
@@ -367,6 +477,8 @@ def notify(car, unknown):
         print("  (NTFY_TOPIC not set, not sending)")
         return
     title = f"ALERT: {car.get('year', '')} {car['model']} found".replace("  ", " ")
+    if car.get("foreign"):
+        title += f" abroad ({car.get('location') or '?'})"
     requests.post(
         f"https://ntfy.sh/{NTFY_TOPIC}",
         data=describe(car, unknown).encode("utf-8"),
