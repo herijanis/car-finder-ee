@@ -1,5 +1,5 @@
 // Network first so changes always show; the cached copy only opens the app when offline.
-const CACHE = "autootsing-v1";
+const CACHE = "autootsing-v2";
 self.addEventListener("install", e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(["./", "index.html"]))));
 self.addEventListener("fetch", e => {
   if (e.request.mode !== "navigate") return;

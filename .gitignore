@@ -9,3 +9,4 @@ fb-profile/
 .told-*
 seen-server.json
 .venv/
+github_token.txt

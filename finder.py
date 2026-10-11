@@ -1,6 +1,7 @@
 """Search Estonian car sites for listings that match the searches in searches.json
 (edited from the phone app in docs/) and post new matches to the family Telegram group."""
 
+import base64
 import json
 import os
 import re
@@ -696,6 +697,38 @@ def send_telegram(html):
     r.raise_for_status()
 
 
+STATUS_TOKEN = setting("STATUS_TOKEN", "github_token.txt")
+STATUS_NAME = os.environ.get("STATUS_NAME", "pc")  # "server" or "pc": each writes its own file
+STATUS_URL = f"https://api.github.com/repos/herijanis/car-finder-ee/contents/status-{STATUS_NAME}.json"
+
+
+def publish_status(results, known, found):
+    """Tell the app what this machine searched and found. Lives on the "status" branch so it
+    doesn't clutter main or rebuild the app on every run."""
+    if not STATUS_TOKEN or DRY_RUN:
+        return
+    headers = {"Authorization": f"Bearer {STATUS_TOKEN}", "Accept": "application/vnd.github+json"}
+    try:
+        r = requests.get(STATUS_URL, params={"ref": "status"}, headers=headers, timeout=20)
+        old, sha = {}, None
+        if r.status_code == 200:
+            sha = r.json()["sha"]
+            old = json.loads(base64.b64decode(r.json()["content"]))
+        status = {
+            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "sources": {**old.get("sources", {}), **results},  # the fast and slow runs cover different sites
+            "known": known,
+            "recent": (found + old.get("recent", []))[:30],
+        }
+        body = {"message": f"Status from {STATUS_NAME}", "branch": "status",
+                "content": base64.b64encode(json.dumps(status, ensure_ascii=False).encode()).decode()}
+        if sha:
+            body["sha"] = sha
+        requests.put(STATUS_URL, headers=headers, json=body, timeout=20).raise_for_status()
+    except (requests.RequestException, ValueError, KeyError) as e:
+        print(f"status not published: {e}")
+
+
 def tell_once_a_day(topic, html):
     """A warning for the group that must not repeat every 30 minutes."""
     marker = ROOT / f".told-{topic}"
@@ -721,7 +754,7 @@ def main():
     print(f"{len(searches)} active searches: {', '.join(s['name'] for s in searches)}")
     seen = json.loads(SEEN_FILE.read_text(encoding="utf-8")) if SEEN_FILE.exists() else {}
 
-    failures = []
+    failures, results = [], {}
     if searches:
         for name, fn in SOURCES.items():
             print(f"{name}: searching")
@@ -730,6 +763,7 @@ def main():
             except Exception as e:  # one broken site must not stop the others
                 print(f"{name}: FAILED {e!r}")
                 failures.append(name)
+                results[name] = {"ok": False, "at": now.isoformat(timespec="seconds")}
                 if name == "facebook" and "login" in str(e):
                     tell_once_a_day("fb_login", "⚠️ Facebooki sisselogimine aegus. Marketplace'i ei otsita, "
                                     "kuni teine konto uuesti sisse logib (fb_login.py arvutis).")
@@ -737,6 +771,7 @@ def main():
             for car in cars:
                 seen[car.pop("key")] = {"first_seen": now.isoformat(), "car": car, "alerted": []}
             print(f"{name}: {len(cars)} new listings")
+            results[name] = {"ok": True, "new": len(cars), "at": now.isoformat(timespec="seconds")}
 
     # Check every recent listing against every search, so a search added in the app
     # also finds cars that were already listed. Each car is sent once per search.
@@ -751,7 +786,7 @@ def main():
             pending.append((entry, hits))
     pending.sort(key=lambda p: p[0]["first_seen"], reverse=True)
 
-    sent = 0
+    sent, found = 0, []
     for entry, hits in pending[:MAX_ALERTS_PER_RUN]:
         print(f"MATCH {entry['car']['url']} for {[s['name'] for s, _ in hits]}")
         try:
@@ -762,6 +797,9 @@ def main():
         if not DRY_RUN:
             entry["alerted"] += [s["id"] for s, _ in hits]
         sent += 1
+        car = entry["car"]
+        found.append({k: car.get(k) for k in ("title", "year", "km", "kw", "price", "fuel", "gearbox", "location", "source", "url")}
+                     | {"searches": [s["name"] for s, _ in hits], "at": now.isoformat(timespec="seconds")})
         time.sleep(1)
     if len(pending) > MAX_ALERTS_PER_RUN:
         print(f"{len(pending) - MAX_ALERTS_PER_RUN} more matches wait for the next run")
@@ -774,6 +812,7 @@ def main():
     forget = (now - timedelta(days=FORGET_DAYS)).isoformat()
     seen = {k: v for k, v in seen.items() if v["first_seen"] >= forget}
     SEEN_FILE.write_text(json.dumps(seen, ensure_ascii=False, indent=0, sort_keys=True), encoding="utf-8")
+    publish_status(results, sum(1 for v in seen.values() if "car" in v), found)
     print(f"sent {sent} alerts")
     return 1 if searches and len(failures) == len(SOURCES) else 0
 
