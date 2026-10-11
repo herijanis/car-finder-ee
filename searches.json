@@ -1,0 +1,24 @@
+{
+  "searches": [
+    {
+      "id": "s1",
+      "name": "Odav diisel-universaal",
+      "active": true,
+      "models": [
+        {"make": "Audi", "model": "A4"},
+        {"make": "Audi", "model": "A6"},
+        {"make": "Volkswagen", "model": "Passat"}
+      ],
+      "year_min": 1996,
+      "year_max": 2004,
+      "price_min": null,
+      "price_max": null,
+      "km_max": 250000,
+      "kw_min": null,
+      "kw_max": 96,
+      "fuel": "diesel",
+      "gearbox": "manual",
+      "body": "wagon"
+    }
+  ]
+}

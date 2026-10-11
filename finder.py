@@ -1,56 +1,44 @@
-"""Search Estonian car sites for listings that match CRITERIA and push new ones to ntfy."""
+"""Search Estonian car sites for listings that match the searches in searches.json
+(edited from the phone app in docs/) and post new matches to the family Telegram group."""
 
 import json
-from html import escape as html_escape
 import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
+from html import escape as html_escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
 
-# ---------------------------------------------------------------------------
-# What to look for. Edit these to change the search.
-# ---------------------------------------------------------------------------
-CRITERIA = {
-    # brand -> models (matched against the listing's make/model or title)
-    "models": {"audi": ["a4", "a6"], "volkswagen": ["passat"]},
-    "year_min": 1996,
-    "year_max": 2004,
-    "body": "wagon",       # universaal / Avant / Variant
-    "fuel": "diesel",
-    "gearbox": "manual",
-    "kw_max": 96,
-    "km_max": 250_000,
-}
-
-
-# Search terms per site (the model check above decides what actually matches).
-SEARCH_TERMS = ["audi a4", "audi a6", "passat"]
-
 ROOT = Path(__file__).parent
+SEARCHES_FILE = ROOT / "searches.json"
+# The home PC reads the searches straight from GitHub so the app's changes reach it without a git pull.
+SEARCHES_URL = "https://api.github.com/repos/herijanis/car-finder-ee/contents/searches.json"
 # GitHub runs one set of sites and the home PC another (some sites block GitHub),
 # so each place keeps its own memory of what it has already seen.
 SEEN_FILE = ROOT / os.environ.get("SEEN_FILE", "seen.json")
-MATCHES_FILE = ROOT / os.environ.get("MATCHES_FILE", "MATCHES.md")
 DRY_RUN = os.environ.get("DRY_RUN") == "true"
-TOPIC_FILE = ROOT / "ntfy_topic.txt"
+
+
 def setting(name, filename):
     """A secret from the environment (GitHub) or a git-ignored file next to this script (home PC)."""
     path = ROOT / filename
     return os.environ.get(name) or (path.read_text().strip() if path.exists() else "")
 
 
-NTFY_TOPIC = "" if DRY_RUN else setting("NTFY_TOPIC", TOPIC_FILE.name)
 TELEGRAM_TOKEN = setting("TELEGRAM_TOKEN", "telegram_token.txt")
 TELEGRAM_CHAT = "" if DRY_RUN else setting("TELEGRAM_CHAT", "telegram_chat.txt")
-MAX_ALERTS_PER_RUN = 15
+MAX_ALERTS_PER_RUN = 15    # Telegram allows ~20 messages a minute in a group; the rest wait for the next run
 DETAIL_FETCH_LIMIT = 400   # per source per run, keeps the first run polite
+RECHECK_DAYS = 30          # known listings this recent are re-checked when a search is added or changed
+FORGET_DAYS = 120
 DELAY = 1.0                # seconds between requests to the same site
+TALLINN = ZoneInfo("Europe/Tallinn")
 
 session = requests.Session()
 session.headers.update({
@@ -74,21 +62,85 @@ def get(url, **kw):
 
 
 # ---------------------------------------------------------------------------
+# Searches (from the app)
+# ---------------------------------------------------------------------------
+def load_searches():
+    """Active searches. GitHub reads its checkout; the PC asks GitHub for the latest version."""
+    data = None
+    if os.environ.get("SEARCHES_FROM_GITHUB") == "true":
+        try:
+            r = requests.get(SEARCHES_URL, timeout=20, headers={"Accept": "application/vnd.github.raw+json"})
+            r.raise_for_status()
+            data = r.json()
+        except (requests.RequestException, ValueError) as e:
+            print(f"could not fetch searches from GitHub, using local copy: {e}")
+    if data is None:
+        data = json.loads(SEARCHES_FILE.read_text(encoding="utf-8"))
+    return [s for s in data.get("searches", []) if s.get("active", True) and s.get("models")]
+
+
+def slugify(text):
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+MAKE_ALIASES = {
+    "volkswagen": ["volkswagen", "vw"],
+    "mercedes-benz": ["mercedes", "benz", "mb"],
+    "skoda": ["skoda", "škoda"],
+    "citroen": ["citroen", "citroën"],
+    "bmw": ["bmw"],
+}
+
+
+def names_model(text, make, model):
+    """Does the listing text name this make/model? Short model names (A4, 320, C) also need the make."""
+    t = " " + re.sub(r"[-_/]", " ", (text or "").lower()) + " "
+    m = re.sub(r"[-_/]", " ", model.lower()).strip()
+    if not m or not re.search(rf"(?<![a-z0-9]){re.escape(m)}(?![a-z0-9])", t):
+        return False
+    if len(m.replace(" ", "")) >= 4:
+        return True
+    aliases = MAKE_ALIASES.get(slugify(make), [make.lower()])
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(a)}(?![a-z0-9])", t) for a in aliases)
+
+
+def search_terms(searches):
+    """What to type into a site's search box: just the model when it is distinctive, else make + model."""
+    terms = []
+    for s in searches:
+        for mm in s["models"]:
+            model = mm["model"].strip()
+            term = model if len(model.replace(" ", "")) >= 4 else f"{mm['make']} {model}"
+            if term.lower() not in (t.lower() for t in terms):
+                terms.append(term)
+    return terms
+
+
+# ---------------------------------------------------------------------------
 # Normalising free text into fields
 # ---------------------------------------------------------------------------
 YEAR_RE = re.compile(r"\b(19[5-9]\d|20[0-3]\d)\b")
 KW_RE = re.compile(r"(\d{2,3})\s*kw\b", re.I)
 KM_RE = re.compile(r"(\d{1,3}(?:[\s. ]?\d{3})+|\d{3,7})\s*(tkm|tuh\.?\s*km|km)\b", re.I)
+# Sellers often write mileage without "km": "Kella peal 391000", "läbisõit 250t", "odomeeter 180 tuh".
+KM_WORDS_RE = re.compile(
+    r"(?:läbisõit|labisoit|kella\s+peal|kellal|näit|odomeeter|sõitnud|mileage)\D{0,15}?"
+    r"(\d{1,3}(?:[\s. ]?\d{3})*)\s*(tkm|tuh|t\b|k\b)?", re.I)
 
 
 def norm_fuel(text):
     t = (text or "").lower()
-    if re.search(r"diis|diesel|\btdi\b|\bsdi\b|\btd\b", t):
+    if re.search(r"hübriid|hybrid", t):
+        return "hybrid"
+    if re.search(r"diis|diesel|\btdi\b|\bsdi\b|\btd\b|\bcdi\b|\bhdi\b", t):
         return "diesel"
+    if re.search(r"elekter|electric|\bev\b", t):
+        return "electric"
+    if "gaas" in t or "lpg" in t or "cng" in t:
+        return "gas"
     if re.search(r"bensiin|petrol|\btsi\b|\bfsi\b|\bturbo\b", t):
         return "petrol"
-    if "gaas" in t or "lpg" in t:
-        return "gas"
     return None
 
 
@@ -96,26 +148,24 @@ def norm_gearbox(text):
     t = (text or "").lower()
     if re.search(r"manuaal|manual|käsi", t):
         return "manual"
-    if re.search(r"automaat|automatic|tiptronic|multitronic|dsg", t):
+    if re.search(r"automaat|automatic|tiptronic|multitronic|dsg|poolautomaat", t):
         return "automatic"
     return None
 
 
 def norm_body(text):
     t = (text or "").lower()
-    if re.search(r"universaal|avant|variant|kombi|wagon|touring|estate", t):
-        return "wagon"
-    if re.search(r"sedaan|sedan", t):
-        return "sedan"
-    if re.search(r"luukpära|hatchback|kupee|kabriolett|maastur", t):
-        return "other"
+    # "mahtuniversaal" contains "universaal", so the minivan check comes first
+    for body, pattern in [("minivan", r"mahtuniversaal|minivan|kaubik"),
+                          ("wagon", r"universaal|avant|variant|kombi|wagon|touring|estate"),
+                          ("sedan", r"sedaan|sedan"),
+                          ("hatchback", r"luukpära|hatchback|sportback"),
+                          ("suv", r"maastur|\bsuv\b|linnamaastur"),
+                          ("coupe", r"kupee|coupe"),
+                          ("cabrio", r"kabriolett|cabrio|roadster")]:
+        if re.search(pattern, t):
+            return body
     return None
-
-
-# Sellers often write mileage without "km": "Kella peal 391000", "läbisõit 250t", "odomeeter 180 tuh".
-KM_WORDS_RE = re.compile(
-    r"(?:läbisõit|labisoit|kella\s+peal|kellal|näit|odomeeter|sõitnud|mileage)\D{0,15}?"
-    r"(\d{1,3}(?:[\s. ]?\d{3})*)\s*(tkm|tuh|t\b|k\b)?", re.I)
 
 
 def parse_km(text):
@@ -135,60 +185,55 @@ def parse_int(text):
     return int(digits) if digits else None
 
 
-def model_of(text):
-    """Return 'Audi A4' / 'Audi A6' / 'Volkswagen Passat' if text names one of the wanted models."""
-    t = (text or "").lower().replace("-", " ")
-    for brand, models in CRITERIA["models"].items():
-        for model in models:
-            if re.search(rf"\b{model}\b", t):
-                # 'passat' is unambiguous; 'a4'/'a6' need the brand nearby to skip e.g. paper sizes
-                if brand == "audi" and "audi" not in t:
-                    continue
-                return f"{brand.title()} {model.upper() if len(model) <= 2 else model.title()}"
-    return None
+def first_year(text):
+    return int(m.group(1)) if (m := YEAR_RE.search(text or "")) else None
 
 
 # ---------------------------------------------------------------------------
 # Matching
 # ---------------------------------------------------------------------------
-def check(car):
-    """Return (is_match, list_of_unknown_fields). A known value that fails any rule rejects the car."""
-    c = CRITERIA
-    if not car.get("model"):
+RULES = [  # (car field, check, search keys it needs)
+    ("year", lambda v, s: (s.get("year_min") or 0) <= v <= (s.get("year_max") or 9999), ("year_min", "year_max")),
+    ("price", lambda v, s: (s.get("price_min") or 0) <= v <= (s.get("price_max") or 10**9), ("price_min", "price_max")),
+    ("km", lambda v, s: v <= s["km_max"], ("km_max",)),
+    ("kw", lambda v, s: (s.get("kw_min") or 0) <= v <= (s.get("kw_max") or 10**4), ("kw_min", "kw_max")),
+    ("fuel", lambda v, s: v == s["fuel"], ("fuel",)),
+    ("gearbox", lambda v, s: v == s["gearbox"], ("gearbox",)),
+    ("body", lambda v, s: v == s["body"], ("body",)),
+]
+
+
+def check(car, search):
+    """Return (is_match, fields the ad doesn't state). A stated value that fails any rule rejects the car."""
+    if not any(names_model(car.get("name"), mm["make"], mm["model"]) for mm in search["models"]):
         return False, []
     unknown = []
-    rules = [
-        ("year", lambda v: c["year_min"] <= v <= c["year_max"]),
-        ("body", lambda v: v == c["body"]),
-        ("fuel", lambda v: v == c["fuel"]),
-        ("gearbox", lambda v: v == c["gearbox"]),
-        ("kw", lambda v: v <= c["kw_max"]),
-        ("km", lambda v: v <= c["km_max"]),
-    ]
-    for field, ok in rules:
+    for field, ok, keys in RULES:
+        if not any(search.get(k) not in (None, "", "any") for k in keys):
+            continue  # this search doesn't care about the field
         v = car.get(field)
         if v is None:
             unknown.append(field)
-        elif not ok(v):
+        elif not ok(v, search):
             return False, []
-    # Year is essential: without it almost any Passat would slip through.
+    # Year is essential: without it almost any matching model would slip through.
     if "year" in unknown:
         return False, []
     return True, unknown
 
 
 # ---------------------------------------------------------------------------
-# Sources
+# Sources: each returns cars it hasn't seen before, as plain dicts
 # ---------------------------------------------------------------------------
-def okidoki(seen):
+def okidoki(seen, searches):
     base = "https://www.okidoki.ee"
     ids = {}
-    for term in SEARCH_TERMS:
+    for term in search_terms(searches):
         html = get(f"{base}/buy/1601/", params={"query": term, "pp": 200}).text
         for href, item_id in re.findall(r'href="(/item/[^"/]+/(\d+)/)"', html):
             ids[item_id] = base + href
     cars = []
-    for item_id, url in list(ids.items()):
+    for item_id, url in ids.items():
         key = f"okidoki:{item_id}"
         if key in seen:
             continue
@@ -211,8 +256,8 @@ def okidoki(seen):
         price_el = soup.select_one("[class*=price]")
         cars.append({
             "key": key, "source": "okidoki", "url": url, "title": title,
-            "model": model_of(specs.get("mark ja mudel", "") + " " + title),
-            "year": int(m.group(1)) if (m := YEAR_RE.search(specs.get("registreerimine", ""))) else None,
+            "name": f"{specs.get('mark ja mudel', '')} {title}",
+            "year": first_year(specs.get("registreerimine")),
             "fuel": norm_fuel(specs.get("kütus")),
             "gearbox": norm_gearbox(specs.get("käigukast")),
             "body": norm_body(specs.get("keretüüp")),
@@ -224,11 +269,10 @@ def okidoki(seen):
     return cars
 
 
-def soov(seen):
+def soov(seen, searches):
     ids = {}
-    for term in SEARCH_TERMS:
-        slug = term.replace(" ", "-")
-        html = get(f"https://soov.ee/577-autod/keyword-{slug}/listings.html").text
+    for term in search_terms(searches):
+        html = get(f"https://soov.ee/577-autod/keyword-{slugify(term)}/listings.html").text
         for url, item_id in re.findall(r'href="(https://soov\.ee/(\d+)-[^"]*/details\.html)"', html):
             ids[item_id] = url
     cars = []
@@ -247,27 +291,27 @@ def soov(seen):
         desc_el = soup.find("meta", attrs={"name": "description"})
         desc = desc_el["content"] if desc_el else ""
         text = f"{title}\n{desc}"
-        years = [int(y) for y in YEAR_RE.findall(title)] or [int(y) for y in YEAR_RE.findall(desc)]
-        km = parse_km(text)
-        price = None
-        if m := re.search(r"(\d[\d\s]{1,7})\s*(€|eur)", text, re.I):
-            price = parse_int(m.group(1))
+        price = parse_int(m.group(1)) if (m := re.search(r"(\d[\d\s]{1,7})\s*(€|eur)", text, re.I)) else None
         cars.append({
-            "key": key, "source": "soov", "url": url, "title": title,
-            "model": model_of(text),
-            "year": years[0] if years else None,
+            "key": key, "source": "soov", "url": url, "title": title, "name": text,
+            "year": first_year(title) or first_year(desc),
             "fuel": norm_fuel(text),
             "gearbox": norm_gearbox(text),
             "body": norm_body(text),
             "kw": int(m.group(1)) if (m := KW_RE.search(text)) else None,
-            "km": km,
+            "km": parse_km(text),
             "price": price,
             "location": None,
         })
     return cars
 
 
-def autodiiler(seen):
+AUTODIILER_FUEL = {"diesel": "diesel", "petrol": "petrol", "electric": "electric",
+                   "hybrid-petrol": "hybrid", "hybrid-diesel": "hybrid", "lpg": "gas", "cng": "gas"}
+
+
+def autodiiler(seen, searches):
+    """No server-side filters, so read every listing; the API is cheap and complete."""
     api = "https://garage.autodiiler.ee/api/v1/vehicles"
     cars, page, pages = [], 1, 1
     while page <= pages:
@@ -279,14 +323,11 @@ def autodiiler(seen):
                 continue
             brand = (v.get("brand") or {}).get("name", "")
             model = (v.get("brandModel") or {}).get("name", "")
-            seo = (v.get("seo") or {}).get("description", "")
-            year = int(m.group(1)) if (m := YEAR_RE.search(seo)) else None
             cars.append({
                 "key": key, "source": "autodiiler", "url": f"https://autodiiler.ee/et/vehicles/{v['id']}",
-                "title": v.get("name", ""),
-                "model": model_of(f"{brand} {model}"),
-                "year": year,
-                "fuel": {"diesel": "diesel", "petrol": "petrol"}.get((v.get("fuel_type") or {}).get("value"), "other"),
+                "title": v.get("name", ""), "name": f"{brand} {model} {v.get('name', '')}",
+                "year": first_year((v.get("seo") or {}).get("description")),
+                "fuel": AUTODIILER_FUEL.get((v.get("fuel_type") or {}).get("value"), "other"),
                 "gearbox": norm_gearbox((v.get("transmission_type") or {}).get("value")),
                 "body": norm_body((v.get("vehicleBodyType") or {}).get("name")),
                 "kw": v.get("engine_power"),
@@ -298,15 +339,20 @@ def autodiiler(seen):
     return cars
 
 
-def autoportaal(seen):
+def autoportaal(seen, searches):
     """Model pages list newest first, 20 per page; read pages until one has nothing new."""
     base = "https://autoportaal.ee/et"
+    slugs = list(dict.fromkeys(slugify(f"{mm['make']} {mm['model']}") for s in searches for mm in s["models"]))
     ids = {}
-    for slug in ("audi-a4", "audi-a6", "volkswagen-passat"):
+    for slug in slugs:
         for page in range(1, 11):
-            html = get(f"{base}/{slug}", params={"page": page}).text
-            page_ids = re.findall(r"kasutatud-autod/(\d+)", html)
-            fresh = [i for i in dict.fromkeys(page_ids) if f"autoportaal:{i}" not in seen]
+            try:
+                html = get(f"{base}/{slug}", params={"page": page}).text
+            except requests.HTTPError:
+                print(f"  autoportaal has no page for {slug}")
+                break
+            fresh = [i for i in dict.fromkeys(re.findall(r"kasutatud-autod/(\d+)", html))
+                     if f"autoportaal:{i}" not in seen]
             ids.update((i, f"{base}/kasutatud-autod/{i}") for i in fresh)
             if not fresh:
                 break
@@ -327,14 +373,13 @@ def autoportaal(seen):
         title_el = soup.select_one("#vehicleTitle") or soup.find("h1")
         title = " ".join(title_el.get_text(" ", strip=True).split()) if title_el else ""
         desc = " ".join(lines)
-        price = None
         # The price sits right after a model-years line like "2014-2015", so don't let digits run together.
+        price = None
         if m := re.search(r"(?<![\d-])(\d{1,3}(?:[  ]\d{3})+|\d{1,6})\s*€", desc[desc.find(title[:20]):]):
             price = parse_int(m.group(1))
         cars.append({
-            "key": f"autoportaal:{item_id}", "source": "autoportaal", "url": url, "title": title,
-            "model": model_of(title),
-            "year": int(m.group(1)) if (m := YEAR_RE.search(spec.get("esmareg.", ""))) else None,
+            "key": f"autoportaal:{item_id}", "source": "autoportaal", "url": url, "title": title, "name": title,
+            "year": first_year(spec.get("esmareg.")),
             "fuel": norm_fuel(spec.get("kütus")),
             "gearbox": norm_gearbox(spec.get("käigukast")),
             "body": norm_body(spec.get("keretüüp")),
@@ -346,11 +391,9 @@ def autoportaal(seen):
     return cars
 
 
-
 SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal}
 if os.environ.get("SOURCES"):
     SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}
-TALLINN = ZoneInfo("Europe/Tallinn")
 
 
 def in_search_hours(t):
@@ -359,118 +402,112 @@ def in_search_hours(t):
 
 
 # ---------------------------------------------------------------------------
-# Output
+# Telegram
 # ---------------------------------------------------------------------------
-def describe(car, unknown):
-    bits = [f"{car['km']:,} km".replace(",", " ") if car.get("km") else None,
-            f"{car['kw']} kW" if car.get("kw") else None,
-            f"{car['price']:,} €".replace(",", " ") if car.get("price") else None,
-            car.get("location")]
-    line = " · ".join(b for b in bits if b)
+ET = {"diesel": "diisel", "petrol": "bensiin", "hybrid": "hübriid", "electric": "elekter", "gas": "gaas",
+      "manual": "manuaal", "automatic": "automaat", "wagon": "universaal", "sedan": "sedaan",
+      "hatchback": "luukpära", "suv": "maastur", "coupe": "kupee", "cabrio": "kabriolett",
+      "minivan": "mahtuniversaal", "year": "aasta", "price": "hind", "km": "läbisõit", "kw": "võimsus",
+      "fuel": "kütus", "gearbox": "käigukast", "body": "keretüüp"}
+
+
+def num(n):
+    return f"{n:,}".replace(",", " ")
+
+
+def alert_text(car, hits):
+    """hits: [(search, unknown_fields)]"""
+    e = html_escape
+    names = ", ".join(s["name"] for s, _ in hits)
+    facts = [f"📅 {car['year']}" if car.get("year") else None,
+             f"🛣 {num(car['km'])} km" if car.get("km") else None,
+             f"⚡ {car['kw']} kW" if car.get("kw") else None,
+             f"💶 <b>{num(car['price'])} €</b>" if car.get("price") else None]
+    kind = [ET.get(car.get(f)) for f in ("fuel", "gearbox", "body")]
+    unknown = sorted({f for _, u in hits for f in u})
+    lines = [f"🚨 <b>{e(names)}</b>", f"<b>{e(car['title'])}</b>",
+             " · ".join(x for x in facts if x),
+             " · ".join(x for x in kind if x),
+             f"📍 {e(car['location'])} · {car['source']}" if car.get("location") else f"📍 {car['source']}"]
     if unknown:
-        line += f"\nNot stated in ad: {', '.join(unknown)}"
-    return f"{car['title']}\n{line}\n{car['source']}"
+        lines.append(f"⚠️ Kuulutuses pole märgitud: {', '.join(ET[f] for f in unknown)}")
+    lines.append(f'\n<a href="{e(car["url"])}">👉 Ava kuulutus</a>')
+    return "\n".join(line for line in lines if line)
 
 
 def send_telegram(html):
     """Post to the family Telegram group. Returns quietly if Telegram isn't set up."""
     if not (TELEGRAM_TOKEN and TELEGRAM_CHAT):
+        print("  (Telegram not set up, not sending)")
         return
     r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", timeout=20, data={
-        "chat_id": TELEGRAM_CHAT, "text": html, "parse_mode": "HTML", "disable_web_page_preview": "false"})
+        "chat_id": TELEGRAM_CHAT, "text": html, "parse_mode": "HTML"})
     r.raise_for_status()
 
 
-def notify(car, unknown):
-    if not (NTFY_TOPIC or TELEGRAM_CHAT):
-        print("  (no notification channel set, not sending)")
-        return
-    title = f"ALERT: {car.get('year', '')} {car['model']} found".replace("  ", " ")
-    body = describe(car, unknown)
-    # Each channel on its own: one being down must not cost us the other.
-    try:
-        if NTFY_TOPIC:
-            requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=body.encode("utf-8"), timeout=20, headers={
-                "Title": title.encode("utf-8"), "Click": car["url"],
-                "Tags": "rotating_light,red_car", "Priority": "urgent"})
-    except requests.RequestException as e:
-        print(f"  ntfy failed: {e}")
-    try:
-        lines = [html_escape(line) for line in body.split("\n")]
-        send_telegram(f"🚨 <b>{html_escape(title)}</b>\n" + "\n".join(lines)
-                      + f'\n\n<a href="{html_escape(car["url"])}">👉 Ava kuulutus</a>')
-    except requests.RequestException as e:
-        print(f"  telegram failed: {e}")
-
-
-def notify_text(title, message):
-    try:
-        if NTFY_TOPIC:
-            requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"),
-                          headers={"Title": title}, timeout=20)
-        send_telegram(f"<b>{html_escape(title)}</b>\n{html_escape(message)}")
-    except requests.RequestException as e:
-        print(f"  notification failed: {e}")
-
-
-def write_matches(seen):
-    rows = sorted((v for v in seen.values() if v.get("match")), key=lambda v: v["first_seen"], reverse=True)
-    lines = ["# Current matches", "", f"Updated {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC", ""]
-    if not rows:
-        lines.append("Nothing yet.")
-    for v in rows:
-        lines.append(f"- **{v['year']} {v['model']}**: [{v['title']}]({v['url']}) · {v['summary']} "
-                     f"· {v['source']} · found {v['first_seen'][:10]}")
-    MATCHES_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
+# ---------------------------------------------------------------------------
 def main():
-    seen = json.loads(SEEN_FILE.read_text(encoding="utf-8")) if SEEN_FILE.exists() else {}
     now = datetime.now(timezone.utc)
     local = now.astimezone(TALLINN)
     if not in_search_hours(local) and os.environ.get("RUN_ALL_SOURCES") != "true":
         print(f"{local:%H:%M} in Estonia: outside 08:00-23:00, not searching")
         return 0
+    searches = load_searches()
+    print(f"{len(searches)} active searches: {', '.join(s['name'] for s in searches)}")
+    seen = json.loads(SEEN_FILE.read_text(encoding="utf-8")) if SEEN_FILE.exists() else {}
 
-    new_matches, failures = [], []
-    for name, fn in SOURCES.items():
-        print(f"{name}: searching")
-        try:
-            cars = fn(seen)
-        except Exception as e:  # one broken site must not stop the others
-            print(f"{name}: FAILED {e!r}")
-            failures.append(name)
+    failures = []
+    if searches:
+        for name, fn in SOURCES.items():
+            print(f"{name}: searching")
+            try:
+                cars = fn(seen, searches)
+            except Exception as e:  # one broken site must not stop the others
+                print(f"{name}: FAILED {e!r}")
+                failures.append(name)
+                continue
+            for car in cars:
+                seen[car.pop("key")] = {"first_seen": now.isoformat(), "car": car, "alerted": []}
+            print(f"{name}: {len(cars)} new listings")
+
+    # Check every recent listing against every search, so a search added in the app
+    # also finds cars that were already listed. Each car is sent once per search.
+    recent = (now - timedelta(days=RECHECK_DAYS)).isoformat()
+    pending = []
+    for key, entry in seen.items():
+        if "car" not in entry or entry["first_seen"] < recent:
             continue
-        found = 0
-        for car in cars:
-            ok, unknown = check(car)
-            if not ok and car.get("model") and car.get("year") and 1996 <= car["year"] <= 2004:
-                print(f"  near miss: {car['year']} {car['model']} body={car.get('body')} fuel={car.get('fuel')} "
-                      f"gearbox={car.get('gearbox')} kw={car.get('kw')} km={car.get('km')} {car['url']}")
-            entry = {"first_seen": now.isoformat(), "match": ok}
-            if ok:
-                found += 1
-                entry.update({k: car.get(k) for k in ("url", "title", "model", "year", "source")})
-                entry["summary"] = describe(car, unknown).split("\n")[1]
-                new_matches.append((car, unknown))
-            seen[car["key"]] = entry
-        print(f"{name}: {len(cars)} new listings checked, {found} match")
+        hits = [(s, unknown) for s in searches if s["id"] not in entry["alerted"]
+                for ok, unknown in [check(entry["car"], s)] if ok]
+        if hits:
+            pending.append((entry, hits))
+    pending.sort(key=lambda p: p[0]["first_seen"], reverse=True)
 
-    for car, unknown in new_matches[:MAX_ALERTS_PER_RUN]:
-        print(f"MATCH {car['url']}")
-        notify(car, unknown)
-    if len(new_matches) > MAX_ALERTS_PER_RUN:
-        notify_text("More car matches", f"{len(new_matches) - MAX_ALERTS_PER_RUN} more matches this run. "
-                                        "See MATCHES.md in the car-finder-ee repo.")
-    if len(failures) == len(SOURCES) and local.hour == 9:
-        notify_text("Car finder: site problem", f"Could not search: {', '.join(failures)}")
+    sent = 0
+    for entry, hits in pending[:MAX_ALERTS_PER_RUN]:
+        print(f"MATCH {entry['car']['url']} for {[s['name'] for s, _ in hits]}")
+        try:
+            send_telegram(alert_text(entry["car"], hits))
+        except requests.RequestException as e:
+            print(f"  telegram failed, will retry next run: {e}")
+            continue
+        if not DRY_RUN:
+            entry["alerted"] += [s["id"] for s, _ in hits]
+        sent += 1
+        time.sleep(1)
+    if len(pending) > MAX_ALERTS_PER_RUN:
+        print(f"{len(pending) - MAX_ALERTS_PER_RUN} more matches wait for the next run")
+    if searches and len(failures) == len(SOURCES) and local.hour == 9 and local.minute < 30:
+        try:
+            send_telegram(f"⚠️ Autootsing ei saanud täna hommikul ühtegi saiti lugeda: {', '.join(failures)}")
+        except requests.RequestException:
+            pass
 
-    # Forget listings first seen over a year ago so the file stays small.
-    cutoff = (now - timedelta(days=365)).isoformat()
-    seen = {k: v for k, v in seen.items() if v["first_seen"] >= cutoff}
+    forget = (now - timedelta(days=FORGET_DAYS)).isoformat()
+    seen = {k: v for k, v in seen.items() if v["first_seen"] >= forget}
     SEEN_FILE.write_text(json.dumps(seen, ensure_ascii=False, indent=0, sort_keys=True), encoding="utf-8")
-    write_matches(seen)
-    return 1 if len(failures) == len(SOURCES) else 0
+    print(f"sent {sent} alerts")
+    return 1 if searches and len(failures) == len(SOURCES) else 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="et">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Autootsing</title>
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Autootsing">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  :root {
+    --bg: #f1f5f9; --card: #ffffff; --text: #0f172a; --muted: #64748b; --line: #e2e8f0;
+    --accent: #e11d48; --accent-2: #be123c; --ok: #16a34a; --chip: #f1f5f9; --input: #ffffff;
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 16px rgba(15,23,42,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1120; --card: #131c2e; --text: #e2e8f0; --muted: #94a3b8; --line: #1f2a40;
+      --chip: #1c2740; --input: #0f1729; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { background: #0f172a; color: #fff; padding: calc(18px + env(safe-area-inset-top)) 16px 18px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: -.01em; }
+  header p { margin: 4px 0 0; color: #94a3b8; font-size: 14px; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px 16px 120px; }
+  .status { display: flex; gap: 10px; align-items: center; background: var(--card); border-radius: 14px;
+    padding: 12px 14px; box-shadow: var(--shadow); font-size: 14px; margin-bottom: 16px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 4px rgba(22,163,74,.15); }
+  .dot.bad { background: var(--accent); }
+  .banner { background: #fff7ed; color: #9a3412; border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 16px; }
+  @media (prefers-color-scheme: dark) { .banner { background: #2a1a0e; color: #fdba74; } }
+  .card { background: var(--card); border-radius: 16px; padding: 16px; box-shadow: var(--shadow); margin-bottom: 12px; }
+  .card.off { opacity: .55; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .grow { flex: 1; min-width: 0; }
+  .card h2 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 8px; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 3px 10px; font-size: 13px; font-weight: 600; }
+  .facts { color: var(--muted); font-size: 14px; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; }
+  button, .btn { font: inherit; border: 0; border-radius: 12px; padding: 10px 14px; cursor: pointer;
+    background: var(--chip); color: var(--text); font-weight: 600; }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:active { background: var(--accent-2); }
+  button.danger { color: var(--accent); }
+  button:disabled { opacity: .5; }
+  .fab { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom));
+    padding: 15px 26px; border-radius: 999px; font-size: 17px; box-shadow: 0 8px 24px rgba(225,29,72,.35); }
+  .switch { position: relative; width: 50px; height: 30px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; background: var(--line); border-radius: 999px; transition: .2s; cursor: pointer; }
+  .switch span::before { content: ""; position: absolute; width: 24px; height: 24px; left: 3px; top: 3px;
+    background: #fff; border-radius: 50%; transition: .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .switch input:checked + span { background: var(--ok); }
+  .switch input:checked + span::before { transform: translateX(20px); }
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  /* editor */
+  dialog { border: 0; padding: 0; width: 100%; max-width: 640px; max-height: 100dvh; height: 100dvh;
+    margin: 0 auto; background: var(--bg); color: var(--text); }
+  @media (min-width: 700px) { dialog { height: auto; max-height: 92dvh; margin-top: 4dvh; border-radius: 18px; } }
+  dialog::backdrop { background: rgba(2,6,23,.6); }
+  .sheet-head { position: sticky; top: 0; background: var(--bg); padding: calc(14px + env(safe-area-inset-top)) 16px 10px;
+    display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); z-index: 1; }
+  .sheet-head h3 { margin: 0; flex: 1; font-size: 18px; }
+  form { padding: 16px; }
+  fieldset { border: 0; margin: 0 0 18px; padding: 0; }
+  legend { font-weight: 700; margin-bottom: 8px; font-size: 15px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input, select { width: 100%; font: inherit; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--input); color: var(--text); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .model-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 8px; }
+  .model-row button { padding: 10px 12px; }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .toast { position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+    background: #0f172a; color: #fff; padding: 12px 18px; border-radius: 12px; font-size: 15px; opacity: 0;
+    transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); text-align: center; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🚗 Autootsing</h1>
+  <p>Otsib uusi kuulutusi ja saadab sobivad autod Telegrami gruppi</p>
+</header>
+<main>
+  <div class="status"><span class="dot" id="dot"></span><span id="status">Laen…</span></div>
+  <div class="banner" id="nokey" hidden>
+    Muutmiseks ava see äpp <b>seadistuslingiga</b>, mille said Telegrami. Praegu saad otsinguid ainult vaadata.
+  </div>
+  <div id="list"></div>
+</main>
+<button class="primary fab" id="add">＋ Uus otsing</button>
+
+<dialog id="editor">
+  <div class="sheet-head">
+    <button type="button" id="cancel">Tühista</button>
+    <h3 id="editor-title">Uus otsing</h3>
+    <button type="submit" form="form" class="primary" id="save">Salvesta</button>
+  </div>
+  <form id="form">
+    <fieldset>
+      <label for="f-name">Otsingu nimi</label>
+      <input id="f-name" required maxlength="60" placeholder="nt Odav Passat või Kallim Audi">
+    </fieldset>
+    <fieldset>
+      <legend>Mark ja mudel</legend>
+      <div id="models"></div>
+      <button type="button" id="add-model">＋ Lisa mudel</button>
+      <div class="hint">Mudel nii nagu kuulutustes, nt A4, Passat, Golf, 320, C-klass.</div>
+    </fieldset>
+    <fieldset>
+      <legend>Aasta</legend>
+      <div class="two">
+        <div><label for="f-year_min">Alates</label><input id="f-year_min" type="number" inputmode="numeric" min="1950" max="2035" placeholder="kõik"></div>
+        <div><label for="f-year_max">Kuni</label><input id="f-year_max" type="number" inputmode="numeric" min="1950" max="2035" placeholder="kõik"></div>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Hind (€)</legend>
+      <div class="two">
+        <div><label for="f-price_min">Alates</label><input id="f-price_min" type="number" inputmode="numeric" min="0" step="100" placeholder="kõik"></div>
+        <div><label for="f-price_max">Kuni</label><input id="f-price_max" type="number" inputmode="numeric" min="0" step="100" placeholder="kõik"></div>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Läbisõit ja võimsus</legend>
+      <div><label for="f-km_max">Läbisõit kuni (km)</label><input id="f-km_max" type="number" inputmode="numeric" min="0" step="10000" placeholder="kõik"></div>
+      <div class="two" style="margin-top:10px">
+        <div><label for="f-kw_min">Võimsus alates (kW)</label><input id="f-kw_min" type="number" inputmode="numeric" min="0" placeholder="kõik"></div>
+        <div><label for="f-kw_max">Võimsus kuni (kW)</label><input id="f-kw_max" type="number" inputmode="numeric" min="0" placeholder="kõik"></div>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Kütus, käigukast, kere</legend>
+      <label for="f-fuel">Kütus</label>
+      <select id="f-fuel"></select>
+      <label for="f-gearbox" style="margin-top:10px">Käigukast</label>
+      <select id="f-gearbox"></select>
+      <label for="f-body" style="margin-top:10px">Keretüüp</label>
+      <select id="f-body"></select>
+    </fieldset>
+    <button type="button" class="danger" id="delete" hidden>Kustuta see otsing</button>
+  </form>
+</dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+const REPO = "herijanis/car-finder-ee";
+const FILE_URL = `https://api.github.com/repos/${REPO}/contents/searches.json`;
+const RUNS_URL = `https://api.github.com/repos/${REPO}/actions/workflows/search.yml/runs?per_page=5`;
+const MAKES = ["Audi", "BMW", "Citroen", "Ford", "Honda", "Hyundai", "Kia", "Lexus", "Mazda", "Mercedes-Benz",
+  "Mitsubishi", "Nissan", "Opel", "Peugeot", "Renault", "Seat", "Skoda", "Subaru", "Toyota", "Volkswagen", "Volvo"];
+const OPTIONS = {
+  fuel: [["any", "Kõik"], ["diesel", "Diisel"], ["petrol", "Bensiin"], ["hybrid", "Hübriid"], ["electric", "Elekter"], ["gas", "Gaas"]],
+  gearbox: [["any", "Kõik"], ["manual", "Manuaal"], ["automatic", "Automaat"]],
+  body: [["any", "Kõik"], ["wagon", "Universaal"], ["sedan", "Sedaan"], ["hatchback", "Luukpära"], ["suv", "Maastur"],
+         ["minivan", "Mahtuniversaal"], ["coupe", "Kupee"], ["cabrio", "Kabriolett"]],
+};
+const NUMBERS = ["year_min", "year_max", "price_min", "price_max", "km_max", "kw_min", "kw_max"];
+const label = (kind, v) => (OPTIONS[kind].find(o => o[0] === v) || [, ""])[1];
+const $ = id => document.getElementById(id);
+
+// The write key arrives once in a private setup link (#voti=...) and is kept on this phone only.
+let key = "";
+try {
+  const m = location.hash.match(/voti=([^&]+)/);
+  if (m) { localStorage.setItem("voti", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); }
+  key = localStorage.getItem("voti") || "";
+} catch (e) { /* private mode: read-only */ }
+
+let data = { searches: [] }, sha = null, editing = null;
+
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+const headers = () => key ? { Authorization: `Bearer ${key}` } : {};
+const b64decode = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, "")), c => c.charCodeAt(0)));
+const b64encode = s => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = n => Number(n).toLocaleString("et-EE");
+
+async function load() {
+  const r = await fetch(FILE_URL + "?t=" + Date.now(), { headers: headers(), cache: "no-store" });
+  if (!r.ok) throw new Error("load " + r.status);
+  const j = await r.json();
+  sha = j.sha; data = JSON.parse(b64decode(j.content));
+  render();
+}
+
+async function save(message) {
+  if (!key) { toast("Muutmiseks ava äpp seadistuslingiga"); return false; }
+  const body = { message, content: b64encode(JSON.stringify(data, null, 2) + "\n"), sha };
+  const r = await fetch(FILE_URL, { method: "PUT", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 409 || r.status === 422) { await load(); toast("Keegi muutis samal ajal. Proovi uuesti."); return false; }
+  if (!r.ok) { toast(r.status === 401 || r.status === 403 ? "Võti ei kehti. Küsi uus seadistuslink." : "Salvestamine ebaõnnestus"); return false; }
+  sha = (await r.json()).content.sha;
+  toast("Salvestatud ✓ Otsing algab kohe");
+  return true;
+}
+
+function range(a, b, unit) {
+  if (a && b) return `${fmt(a)}–${fmt(b)}${unit}`;
+  if (a) return `alates ${fmt(a)}${unit}`;
+  if (b) return `kuni ${fmt(b)}${unit}`;
+  return "";
+}
+
+function render() {
+  $("nokey").hidden = !!key;
+  const list = $("list");
+  if (!data.searches.length) {
+    list.innerHTML = `<div class="empty">Otsinguid veel pole.<br>Vajuta <b>＋ Uus otsing</b>.</div>`;
+    return;
+  }
+  list.innerHTML = data.searches.map((s, i) => {
+    const facts = [
+      range(s.year_min, s.year_max, ""), range(s.price_min, s.price_max, " €"),
+      s.km_max ? `kuni ${fmt(s.km_max)} km` : "", range(s.kw_min, s.kw_max, " kW"),
+      ...["fuel", "gearbox", "body"].map(k => s[k] && s[k] !== "any" ? label(k, s[k]).toLowerCase() : ""),
+    ].filter(Boolean).join(" · ");
+    return `<div class="card ${s.active === false ? "off" : ""}">
+      <div class="row">
+        <div class="grow"><h2>${esc(s.name)}</h2></div>
+        <label class="switch" aria-label="Otsing sees"><input type="checkbox" data-toggle="${i}" ${s.active === false ? "" : "checked"}><span></span></label>
+      </div>
+      <div class="chips">${s.models.map(m => `<span class="chip">${esc(m.make)} ${esc(m.model)}</span>`).join("")}</div>
+      <div class="facts">${esc(facts) || "Kõik autod nendest mudelitest"}</div>
+      <div class="actions"><button data-edit="${i}">Muuda</button></div>
+    </div>`;
+  }).join("");
+}
+
+$("list").addEventListener("click", e => {
+  const i = e.target.dataset.edit;
+  if (i !== undefined) openEditor(Number(i));
+});
+$("list").addEventListener("change", async e => {
+  const i = e.target.dataset.toggle;
+  if (i === undefined) return;
+  const s = data.searches[Number(i)];
+  const before = s.active;
+  s.active = e.target.checked;
+  render();
+  if (!await save(`Äpp: otsing "${s.name}" ${s.active ? "sisse" : "välja"}`)) { s.active = before; render(); }
+});
+
+function fillSelect(id, kind) { $(id).innerHTML = OPTIONS[kind].map(([v, t]) => `<option value="${v}">${t}</option>`).join(""); }
+fillSelect("f-fuel", "fuel"); fillSelect("f-gearbox", "gearbox"); fillSelect("f-body", "body");
+
+function modelRow(m = { make: "Volkswagen", model: "" }) {
+  const row = document.createElement("div");
+  row.className = "model-row";
+  const makes = MAKES.includes(m.make) ? MAKES : [m.make, ...MAKES];
+  row.innerHTML = `<select aria-label="Mark">${makes.map(x => `<option ${x === m.make ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>
+    <input aria-label="Mudel" placeholder="Mudel" value="${esc(m.model)}" required>
+    <button type="button" aria-label="Eemalda">✕</button>`;
+  row.querySelector("button").onclick = () => { if ($("models").children.length > 1) row.remove(); };
+  $("models").append(row);
+}
+$("add-model").onclick = () => modelRow();
+
+function openEditor(i) {
+  if (!key) { toast("Muutmiseks ava äpp seadistuslingiga"); return; }
+  editing = i;
+  const s = i === null ? { name: "", models: [{ make: "Volkswagen", model: "" }], fuel: "any", gearbox: "any", body: "any" } : data.searches[i];
+  $("editor-title").textContent = i === null ? "Uus otsing" : "Muuda otsingut";
+  $("f-name").value = s.name;
+  $("models").innerHTML = ""; s.models.forEach(modelRow);
+  NUMBERS.forEach(k => $("f-" + k).value = s[k] ?? "");
+  ["fuel", "gearbox", "body"].forEach(k => $("f-" + k).value = s[k] || "any");
+  $("delete").hidden = i === null;
+  $("editor").showModal();
+}
+$("add").onclick = () => openEditor(null);
+$("cancel").onclick = () => $("editor").close();
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const models = [...$("models").children].map(r => ({ make: r.querySelector("select").value, model: r.querySelector("input").value.trim() }))
+    .filter(m => m.model);
+  if (!models.length) { toast("Lisa vähemalt üks mudel"); return; }
+  const s = editing === null ? { id: "s" + Date.now().toString(36), active: true } : { ...data.searches[editing] };
+  s.name = $("f-name").value.trim();
+  s.models = models;
+  NUMBERS.forEach(k => { const v = $("f-" + k).value; s[k] = v === "" ? null : Number(v); });
+  ["fuel", "gearbox", "body"].forEach(k => s[k] = $("f-" + k).value);
+  const old = data.searches.slice();
+  if (editing === null) data.searches.push(s); else data.searches[editing] = s;
+  $("save").disabled = true;
+  const ok = await save(`Äpp: ${editing === null ? "uus otsing" : "muudetud otsing"} "${s.name}"`);
+  $("save").disabled = false;
+  if (ok) { $("editor").close(); render(); } else { data.searches = old; }
+});
+
+$("delete").onclick = async () => {
+  const s = data.searches[editing];
+  if (!confirm(`Kustutada otsing "${s.name}"?`)) return;
+  const old = data.searches.slice();
+  data.searches.splice(editing, 1);
+  if (await save(`Äpp: kustutatud otsing "${s.name}"`)) { $("editor").close(); render(); } else { data.searches = old; }
+};
+
+async function status() {
+  try {
+    const r = await fetch(RUNS_URL, { cache: "no-store" });
+    const runs = (await r.json()).workflow_runs || [];
+    const last = runs.find(x => x.status === "completed");
+    if (!last) throw 0;
+    const mins = Math.round((Date.now() - new Date(last.updated_at)) / 60000);
+    const ago = mins < 1 ? "just praegu" : mins < 60 ? `${mins} min tagasi` : `${Math.round(mins / 60)} h tagasi`;
+    const good = last.conclusion === "success";
+    $("dot").className = "dot " + (good ? "ok" : "bad");
+    $("status").textContent = good ? `Töötab · viimane otsing ${ago}` : `Viimane otsing ebaõnnestus (${ago}), proovib uuesti`;
+  } catch (e) {
+    $("status").textContent = "Otsing käib iga 30 min (kell 8–23)";
+  }
+}
+
+load().catch(() => { $("list").innerHTML = `<div class="empty">Ei saanud otsinguid laadida. Kontrolli internetti.</div>`; });
+status(); setInterval(status, 60000);
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
