@@ -5,9 +5,18 @@
       "name": "Odav diisel-universaal",
       "active": true,
       "models": [
-        {"make": "Audi", "model": "A4"},
-        {"make": "Audi", "model": "A6"},
-        {"make": "Volkswagen", "model": "Passat"}
+        {
+          "make": "Audi",
+          "model": "A4"
+        },
+        {
+          "make": "Audi",
+          "model": "A6"
+        },
+        {
+          "make": "Volkswagen",
+          "model": "Passat"
+        }
       ],
       "year_min": 1996,
       "year_max": 2004,
