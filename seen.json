@@ -61974,7 +61974,9 @@
 "first_seen": "2026-10-11T12:16:03.573880+00:00"
 },
 "autodiiler:78388": {
-"alerted": [],
+"alerted": [
+"s1"
+],
 "car": {
 "body": "wagon",
 "fuel": "diesel",
@@ -85068,7 +85070,9 @@
 "first_seen": "2026-10-11T12:16:03.573880+00:00"
 },
 "autodiiler:80061": {
-"alerted": [],
+"alerted": [
+"s1"
+],
 "car": {
 "body": "wagon",
 "fuel": "diesel",
