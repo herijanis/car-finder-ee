@@ -1,0 +1,12 @@
+# The app and its API, with an automatic https certificate. sslip.io turns the name into the server's IP.
+2-28-131-50.sslip.io {
+	encode gzip
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8090
+	}
+	handle {
+		root * /opt/car-finder/docs
+		header Cache-Control "no-cache"
+		file_server
+	}
+}

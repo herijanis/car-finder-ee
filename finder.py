@@ -17,9 +17,10 @@ import requests
 from bs4 import BeautifulSoup
 
 ROOT = Path(__file__).parent
-SEARCHES_FILE = ROOT / "searches.json"
-# The home PC reads the searches straight from GitHub so the app's changes reach it without a git pull.
-SEARCHES_URL = "https://api.github.com/repos/herijanis/car-finder-ee/contents/searches.json"
+# The app saves searches on the Hetzner server (api.py). The server reads its file directly;
+# the home PC asks the server's API (SEARCHES_URL) and falls back to its own last copy.
+SEARCHES_FILE = ROOT / os.environ.get("SEARCHES_FILE", "searches.json")
+SEARCHES_URL = os.environ.get("SEARCHES_URL")
 # GitHub runs one set of sites and the home PC another (some sites block GitHub),
 # so each place keeps its own memory of what it has already seen.
 SEEN_FILE = ROOT / os.environ.get("SEEN_FILE", "seen.json")
@@ -66,15 +67,16 @@ def get(url, **kw):
 # Searches (from the app)
 # ---------------------------------------------------------------------------
 def load_searches():
-    """Active searches. GitHub reads its checkout; the PC asks GitHub for the latest version."""
+    """Active searches, from the server's API when SEARCHES_URL is set, else from SEARCHES_FILE."""
     data = None
-    if os.environ.get("SEARCHES_FROM_GITHUB") == "true":
+    if SEARCHES_URL:
         try:
-            r = requests.get(SEARCHES_URL, timeout=20, headers={"Accept": "application/vnd.github.raw+json"})
+            r = requests.get(SEARCHES_URL, timeout=20)
             r.raise_for_status()
             data = r.json()
+            SEARCHES_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except (requests.RequestException, ValueError) as e:
-            print(f"could not fetch searches from GitHub, using local copy: {e}")
+            print(f"could not fetch searches, using the last copy: {e}")
     if data is None:
         data = json.loads(SEARCHES_FILE.read_text(encoding="utf-8"))
     return [s for s in data.get("searches", []) if s.get("active", True) and s.get("models")]

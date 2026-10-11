@@ -4,5 +4,6 @@ rem They block GitHub's servers; Facebook also needs the spare account's login i
 cd /d "%~dp0"
 set SOURCES=okidoki,soov,facebook
 set SEEN_FILE=seen-pc.json
-set SEARCHES_FROM_GITHUB=true
+set SEARCHES_URL=https://2-28-131-50.sslip.io/api/searches
+set SEARCHES_FILE=searches-pc.json
 "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" finder.py >> search-pc.log 2>&1

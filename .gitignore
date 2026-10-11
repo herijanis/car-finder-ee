@@ -10,3 +10,5 @@ fb-profile/
 seen-server.json
 .venv/
 github_token.txt
+searches-pc.json
+data/

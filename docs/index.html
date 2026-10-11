@@ -193,6 +193,13 @@
   .toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
   .burst { position: fixed; pointer-events: none; z-index: 60; font-size: 22px; animation: burst 1s var(--ease) forwards; }
   @keyframes burst { to { transform: translate(var(--dx), var(--dy)) rotate(var(--r)) scale(.6); opacity: 0; } }
+  .pin-box { align-items: center; text-align: center; padding: 0 20px calc(26px + env(safe-area-inset-bottom)); }
+  .pin-box h3 { margin: 6px 0 2px; font-size: 20px; } .pin-box p { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+  .pin-emoji { font-size: 40px; margin-top: 14px; animation: drive 2.4s ease-in-out infinite; }
+  #pin { width: 190px; text-align: center; font-size: 30px; letter-spacing: 18px; font-weight: 700; padding: 12px 0 12px 18px; }
+  #pin.shake { animation: shake .4s; border-color: var(--bad); }
+  @keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
+  .pin-err { min-height: 20px; color: var(--bad); font-size: 14px; margin: 8px 0 4px; }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 </head>
@@ -214,9 +221,6 @@
 </header>
 
 <main>
-  <div class="banner" id="nokey" hidden>
-    Muutmiseks ava see äpp <b>seadistuslingiga</b>. Praegu saad otsinguid ainult vaadata.
-  </div>
 
   <h2 class="section">Sinu otsingud <small id="count"></small></h2>
   <div id="list"><div class="skeleton"></div><div class="skeleton"></div></div>
@@ -286,11 +290,25 @@
     </form>
   </div>
 </dialog>
+<dialog id="pin-sheet">
+  <div class="sheet pin-box">
+    <div class="grabber"></div>
+    <div class="pin-emoji">🔐</div>
+    <h3>Sisesta PIN</h3>
+    <p>Ainult üks kord selles telefonis.</p>
+    <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="PIN">
+    <div class="pin-err" id="pin-err"></div>
+    <button type="button" class="btn ghost" id="pin-cancel">Tühista</button>
+  </div>
+</dialog>
 <div class="toast" id="toast"></div>
 
 <script>
 const REPO = "herijanis/car-finder-ee";
-const FILE_URL = `https://api.github.com/repos/${REPO}/contents/searches.json`;
+const HOME = "https://2-28-131-50.sslip.io/";
+// The app used to live on GitHub Pages; send old bookmarks and home-screen icons to the server.
+if (location.hostname.endsWith("github.io")) location.replace(HOME);
+const API = location.hostname.endsWith("sslip.io") ? "/api" : HOME + "api";
 const STATUS_URLS = { server: `https://raw.githubusercontent.com/${REPO}/status/status-server.json`,
                       pc: `https://raw.githubusercontent.com/${REPO}/status/status-pc.json` };
 const SITES = [
@@ -314,15 +332,12 @@ const label = (kind, v) => (OPTIONS[kind].find(o => o[0] === v) || [, ""])[1];
 const $ = id => document.getElementById(id);
 const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
 
-// The write key arrives once in a private setup link (#voti=...) and is kept on this phone only.
-let key = "";
-try {
-  const m = location.hash.match(/voti=([^&]+)/);
-  if (m) { localStorage.setItem("voti", decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); }
-  key = localStorage.getItem("voti") || "";
-} catch (e) { /* private mode: read-only */ }
+// Saving needs the family PIN; the app asks once and remembers it on this phone.
+const store = { get: k => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
+                set: (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} } };
+let pin = store.get("pin");
 
-let data = { searches: [] }, sha = null, editing = null, status = {};
+let data = { searches: [] }, editing = null, status = {};
 const seenOnce = new Set();  // lists that already played their entrance animation
 const anim = list => seenOnce.has(list) ? "" : "reveal";
 
@@ -354,9 +369,6 @@ function countTo(el, n) {
   requestAnimationFrame(step);
 }
 
-const headers = () => key ? { Authorization: `Bearer ${key}` } : {};
-const b64decode = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, "")), c => c.charCodeAt(0)));
-const b64encode = s => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = n => Number(n).toLocaleString("et-EE");
 function ago(iso) {
@@ -365,21 +377,40 @@ function ago(iso) {
 }
 
 async function load() {
-  const r = await fetch(FILE_URL + "?t=" + Date.now(), { headers: headers(), cache: "no-store" });
+  const r = await fetch(API + "/searches", { cache: "no-store" });
   if (!r.ok) throw new Error("load " + r.status);
-  const j = await r.json();
-  sha = j.sha; data = JSON.parse(b64decode(j.content));
+  data = await r.json();
   render();
 }
 
+function askPin() {
+  return new Promise(resolve => {
+    const d = $("pin-sheet"), input = $("pin");
+    input.value = ""; $("pin-err").textContent = "";
+    d.showModal(); setTimeout(() => input.focus(), 350);
+    const done = ok => { input.oninput = null; $("pin-cancel").onclick = null; d.close(); resolve(ok); };
+    $("pin-cancel").onclick = () => done(false);
+    input.oninput = async () => {
+      input.value = input.value.replace(/\D/g, "").slice(0, 4);
+      if (input.value.length < 4) return;
+      const r = await fetch(API + "/pin", { method: "POST", headers: { "X-PIN": input.value } }).catch(() => null);
+      if (r && r.ok) { pin = input.value; store.set("pin", pin); buzz([10, 30, 10]); done(true); return; }
+      buzz(80); input.classList.remove("shake"); void input.offsetWidth; input.classList.add("shake");
+      $("pin-err").textContent = r && r.status === 429 ? "Liiga palju valesid katseid. Oota 15 min." : "Vale PIN, proovi uuesti";
+      setTimeout(() => { input.value = ""; }, 400);
+    };
+  });
+}
+
 async function save(message) {
-  if (!key) { toast("Muutmiseks ava äpp seadistuslingiga"); return false; }
-  const body = { message, content: b64encode(JSON.stringify(data, null, 2) + "\n"), sha };
-  const r = await fetch(FILE_URL, { method: "PUT", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (r.status === 409 || r.status === 422) { await load(); toast("Keegi muutis samal ajal. Proovi uuesti."); return false; }
-  if (!r.ok) { toast(r.status === 401 || r.status === 403 ? "Võti ei kehti. Küsi uus seadistuslink." : "Salvestamine ebaõnnestus"); return false; }
-  sha = (await r.json()).content.sha;
-  return true;
+  if (!pin && !await askPin()) return false;
+  const r = await fetch(API + "/searches", { method: "PUT", headers: { "Content-Type": "application/json", "X-PIN": pin },
+                                            body: JSON.stringify(data) }).catch(() => null);
+  if (r && r.ok) { data = await r.json(); return true; }
+  if (r && r.status === 403) { pin = ""; store.set("pin", ""); toast("PIN ei kehti, sisesta uuesti"); return save(message); }
+  toast(!r ? "Pole internetti" : r.status === 429 ? "Liiga kiiresti, proovi uuesti" : "Salvestamine ebaõnnestus");
+  await load().catch(() => {});
+  return false;
 }
 
 function range(a, b, unit) {
@@ -391,7 +422,6 @@ function range(a, b, unit) {
 const recentFinds = () => [...(status.server?.recent || []), ...(status.pc?.recent || [])].sort((a, b) => b.at.localeCompare(a.at));
 
 function render() {
-  $("nokey").hidden = !!key;
   const active = data.searches.filter(s => s.active !== false).length;
   countTo($("st-searches"), active);
   $("count").textContent = data.searches.length ? `${active}/${data.searches.length} sees` : "";
@@ -515,8 +545,8 @@ function modelRow(m = { make: "Volkswagen", model: "" }) {
 }
 $("add-model").onclick = () => { modelRow(); $("models").lastElementChild.querySelector("input").focus(); };
 
-function openEditor(i) {
-  if (!key) { toast("Muutmiseks ava äpp seadistuslingiga"); return; }
+async function openEditor(i) {
+  if (!pin && !await askPin()) return;
   editing = i;
   const s = i === null ? { name: "", models: [{ make: "Volkswagen", model: "" }], fuel: "any", gearbox: "any", body: [], require: [] } : data.searches[i];
   $("editor-title").textContent = i === null ? "Uus otsing" : "Muuda otsingut";

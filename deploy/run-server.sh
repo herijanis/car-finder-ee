@@ -9,6 +9,6 @@ case "$1" in
 esac
 cd /opt/car-finder
 git pull -q --ff-only || echo "git pull failed, running the code already here"
-export SOURCES SEEN_FILE=seen-server.json SEARCHES_FROM_GITHUB=true SEARCH_ALL_DAY=true STATUS_NAME=server
+export SOURCES SEEN_FILE=seen-server.json SEARCHES_FILE=data/searches.json SEARCH_ALL_DAY=true STATUS_NAME=server
 # One run at a time: both timers share seen-server.json.
 exec flock /tmp/car-finder.lock .venv/bin/python finder.py
