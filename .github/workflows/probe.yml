@@ -1,0 +1,11 @@
+name: Probe sites
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+          for u in "https://www.okidoki.ee/buy/1601/?query=passat" "https://soov.ee/577-autod/keyword-passat/listings.html" "https://autoportaal.ee/et/volkswagen-passat" "https://garage.autodiiler.ee/api/v1/vehicles?page=1" "https://www.auto24.ee/kasutatud/nimekiri.php?bn=2&a=100"; do
+            for i in 1 2 3; do printf '%s try%s -> ' "$u" "$i"; curl -s -L -m 20 -A "$UA" -o /dev/null -w "%{http_code}\n" "$u"; sleep 3; done
+          done
