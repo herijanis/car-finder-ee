@@ -27,7 +27,12 @@
       "kw_max": 96,
       "fuel": "diesel",
       "gearbox": "manual",
-      "body": "wagon"
+      "body": [
+        "wagon"
+      ],
+      "require": [
+        "fuel"
+      ]
     }
   ]
 }

@@ -80,6 +80,11 @@
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .model-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 8px; }
   .model-row button { padding: 10px 12px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 8px; }
+  .checks label { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 14px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--input); color: var(--text); font-size: 15px; cursor: pointer; }
+  .checks input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+  .checks label:has(input:checked) { border-color: var(--accent); }
   .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
   .toast { position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translateX(-50%);
     background: #0f172a; color: #fff; padding: 12px 18px; border-radius: 12px; font-size: 15px; opacity: 0;
@@ -146,8 +151,16 @@
       <select id="f-fuel"></select>
       <label for="f-gearbox" style="margin-top:10px">Käigukast</label>
       <select id="f-gearbox"></select>
-      <label for="f-body" style="margin-top:10px">Keretüüp</label>
-      <select id="f-body"></select>
+    </fieldset>
+    <fieldset>
+      <legend>Keretüüp</legend>
+      <div class="checks" id="f-body"></div>
+      <div class="hint">Vali üks või mitu. Kui ühtegi pole valitud, sobivad kõik.</div>
+    </fieldset>
+    <fieldset>
+      <legend>Saada ainult siis, kui kuulutuses on kirjas</legend>
+      <div class="checks" id="f-require"></div>
+      <div class="hint">Muidu tuleb auto ka siis, kui see info kuulutusest puudub (märkega ⚠️).</div>
     </fieldset>
     <button type="button" class="danger" id="delete" hidden>Kustuta see otsing</button>
   </form>
@@ -163,9 +176,12 @@ const MAKES = ["Audi", "BMW", "Citroen", "Ford", "Honda", "Hyundai", "Kia", "Lex
 const OPTIONS = {
   fuel: [["any", "Kõik"], ["diesel", "Diisel"], ["petrol", "Bensiin"], ["hybrid", "Hübriid"], ["electric", "Elekter"], ["gas", "Gaas"]],
   gearbox: [["any", "Kõik"], ["manual", "Manuaal"], ["automatic", "Automaat"]],
-  body: [["any", "Kõik"], ["wagon", "Universaal"], ["sedan", "Sedaan"], ["hatchback", "Luukpära"], ["suv", "Maastur"],
+  body: [["wagon", "Universaal"], ["sedan", "Sedaan"], ["hatchback", "Luukpära"], ["suv", "Maastur"],
          ["minivan", "Mahtuniversaal"], ["coupe", "Kupee"], ["cabrio", "Kabriolett"]],
 };
+const REQUIRE = [["fuel", "Kütus"], ["gearbox", "Käigukast"], ["body", "Keretüüp"], ["km", "Läbisõit"], ["price", "Hind"], ["kw", "Võimsus"]];
+// Older searches store one body type as a string; the app now keeps a list.
+const bodies = s => Array.isArray(s.body) ? s.body : (s.body && s.body !== "any" ? [s.body] : []);
 const NUMBERS = ["year_min", "year_max", "price_min", "price_max", "km_max", "kw_min", "kw_max"];
 const label = (kind, v) => (OPTIONS[kind].find(o => o[0] === v) || [, ""])[1];
 const $ = id => document.getElementById(id);
@@ -227,7 +243,9 @@ function render() {
     const facts = [
       range(s.year_min, s.year_max, ""), range(s.price_min, s.price_max, " €"),
       s.km_max ? `kuni ${fmt(s.km_max)} km` : "", range(s.kw_min, s.kw_max, " kW"),
-      ...["fuel", "gearbox", "body"].map(k => s[k] && s[k] !== "any" ? label(k, s[k]).toLowerCase() : ""),
+      ...["fuel", "gearbox"].map(k => s[k] && s[k] !== "any" ? label(k, s[k]).toLowerCase() : ""),
+      bodies(s).map(b => label("body", b).toLowerCase()).join(" / "),
+      (s.require || []).length ? "⚠️ nõutud: " + s.require.map(r => REQUIRE.find(x => x[0] === r)[1].toLowerCase()).join(", ") : "",
     ].filter(Boolean).join(" · ");
     return `<div class="card ${s.active === false ? "off" : ""}">
       <div class="row">
@@ -256,7 +274,13 @@ $("list").addEventListener("change", async e => {
 });
 
 function fillSelect(id, kind) { $(id).innerHTML = OPTIONS[kind].map(([v, t]) => `<option value="${v}">${t}</option>`).join(""); }
-fillSelect("f-fuel", "fuel"); fillSelect("f-gearbox", "gearbox"); fillSelect("f-body", "body");
+fillSelect("f-fuel", "fuel"); fillSelect("f-gearbox", "gearbox");
+function fillChecks(id, options) {
+  $(id).innerHTML = options.map(([v, t]) => `<label><input type="checkbox" value="${v}">${t}</label>`).join("");
+}
+fillChecks("f-body", OPTIONS.body); fillChecks("f-require", REQUIRE);
+const setChecks = (id, values) => $(id).querySelectorAll("input").forEach(c => c.checked = values.includes(c.value));
+const getChecks = id => [...$(id).querySelectorAll("input:checked")].map(c => c.value);
 
 function modelRow(m = { make: "Volkswagen", model: "" }) {
   const row = document.createElement("div");
@@ -273,12 +297,13 @@ $("add-model").onclick = () => modelRow();
 function openEditor(i) {
   if (!key) { toast("Muutmiseks ava äpp seadistuslingiga"); return; }
   editing = i;
-  const s = i === null ? { name: "", models: [{ make: "Volkswagen", model: "" }], fuel: "any", gearbox: "any", body: "any" } : data.searches[i];
+  const s = i === null ? { name: "", models: [{ make: "Volkswagen", model: "" }], fuel: "any", gearbox: "any", body: [], require: [] } : data.searches[i];
   $("editor-title").textContent = i === null ? "Uus otsing" : "Muuda otsingut";
   $("f-name").value = s.name;
   $("models").innerHTML = ""; s.models.forEach(modelRow);
   NUMBERS.forEach(k => $("f-" + k).value = s[k] ?? "");
-  ["fuel", "gearbox", "body"].forEach(k => $("f-" + k).value = s[k] || "any");
+  ["fuel", "gearbox"].forEach(k => $("f-" + k).value = s[k] || "any");
+  setChecks("f-body", bodies(s)); setChecks("f-require", s.require || []);
   $("delete").hidden = i === null;
   $("editor").showModal();
 }
@@ -294,7 +319,9 @@ $("form").addEventListener("submit", async e => {
   s.name = $("f-name").value.trim();
   s.models = models;
   NUMBERS.forEach(k => { const v = $("f-" + k).value; s[k] = v === "" ? null : Number(v); });
-  ["fuel", "gearbox", "body"].forEach(k => s[k] = $("f-" + k).value);
+  ["fuel", "gearbox"].forEach(k => s[k] = $("f-" + k).value);
+  s.body = getChecks("f-body");
+  s.require = getChecks("f-require");
   const old = data.searches.slice();
   if (editing === null) data.searches.push(s); else data.searches[editing] = s;
   $("save").disabled = true;

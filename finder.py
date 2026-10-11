@@ -213,17 +213,19 @@ RULES = [  # (car field, check, search keys it needs)
     ("kw", lambda v, s: (s.get("kw_min") or 0) <= v <= (s.get("kw_max") or 10**4), ("kw_min", "kw_max")),
     ("fuel", lambda v, s: v == s["fuel"], ("fuel",)),
     ("gearbox", lambda v, s: v == s["gearbox"], ("gearbox",)),
-    ("body", lambda v, s: v == s["body"], ("body",)),
+    # one body type (older searches) or a list of them ticked in the app
+    ("body", lambda v, s: v in (s["body"] if isinstance(s["body"], list) else [s["body"]]), ("body",)),
 ]
 
 
 def check(car, search):
-    """Return (is_match, fields the ad doesn't state). A stated value that fails any rule rejects the car."""
+    """Return (is_match, fields the ad doesn't state). A stated value that fails any rule rejects the car,
+    and so does a missing one the search marks as required ("require" in the app)."""
     if not any(names_model(car.get("name"), mm["make"], mm["model"]) for mm in search["models"]):
         return False, []
     unknown = []
     for field, ok, keys in RULES:
-        if not any(search.get(k) not in (None, "", "any") for k in keys):
+        if not any(search.get(k) not in (None, "", "any", []) for k in keys):
             continue  # this search doesn't care about the field
         v = car.get(field)
         if v is None:
@@ -231,7 +233,7 @@ def check(car, search):
         elif not ok(v, search):
             return False, []
     # Year is essential: without it almost any matching model would slip through.
-    if "year" in unknown:
+    if "year" in unknown or set(unknown) & set(search.get("require") or []):
         return False, []
     return True, unknown
 
