@@ -554,7 +554,8 @@ def tell_once_a_day(topic, html):
 def main():
     now = datetime.now(timezone.utc)
     local = now.astimezone(TALLINN)
-    if not in_search_hours(local) and os.environ.get("RUN_ALL_SOURCES") != "true":
+    all_day = os.environ.get("SEARCH_ALL_DAY") == "true" or os.environ.get("RUN_ALL_SOURCES") == "true"
+    if not all_day and not in_search_hours(local):
         print(f"{local:%H:%M} in Estonia: outside 08:00-23:00, not searching")
         return 0
     searches = load_searches()

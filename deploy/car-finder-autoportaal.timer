@@ -1,0 +1,10 @@
+[Unit]
+Description=Car finder: autoportaal every 10 minutes
+
+[Timer]
+OnCalendar=*:0/10
+Unit=car-finder@autoportaal.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

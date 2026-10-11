@@ -1,0 +1,10 @@
+[Unit]
+Description=Car finder: search %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/car-finder/deploy/run-server.sh %i
+TimeoutStartSec=25min
+Nice=10
