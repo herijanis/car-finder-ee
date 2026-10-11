@@ -186,7 +186,21 @@ def parse_int(text):
 
 
 def first_year(text):
-    return int(m.group(1)) if (m := YEAR_RE.search(text or "")) else None
+    """First plausible model year; a future year is an inspection date or similar, not the car's age."""
+    this_year = datetime.now().year
+    return next((int(y) for y in YEAR_RE.findall(text or "") if int(y) <= this_year), None)
+
+
+# In free text a year only counts as the car's year next to a word that says so
+# ("2003 a.", "aasta 2003", "Esmaregistreerimine: 05.2002").
+YEAR_IN_TEXT_RE = re.compile(
+    r"(?:aasta|mudeliaasta|esmareg\w*|registreeri\w*|reg\.?)\D{0,12}(?:\d{1,2}[./])?(19[5-9]\d|20[0-3]\d)"
+    r"|(19[5-9]\d|20[0-3]\d)\s*(?:a\.|aasta|\.a\b)", re.I)
+
+
+def year_in_text(text):
+    m = YEAR_IN_TEXT_RE.search(text or "")
+    return first_year(m.group(1) or m.group(2)) if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +405,85 @@ def autoportaal(seen, searches):
     return cars
 
 
-SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal}
+FB_PROFILE = ROOT / "fb-profile"   # the spare account's login, made with fb_login.py; never leaves the PC
+FB_ITEM_LIMIT = 10                 # ad pages opened per run: Facebook watches for automated use
+FB_ITEM_RE = re.compile(r'\{"__typename":"GroupCommerceProductItem","id":"(\d+)"')
+
+
+def fb_field(chunk, pattern):
+    m = re.search(pattern, chunk)
+    return json.loads(f'"{m.group(1)}"') if m else None
+
+
+def facebook(seen, searches):
+    """Marketplace around Tallinn, read as the spare account. Hourly only, and few ad pages per run."""
+    if datetime.now().minute >= 30 and os.environ.get("RUN_ALL_SOURCES") != "true":
+        print("  facebook: only on the first half of the hour")
+        return []
+    from playwright.sync_api import sync_playwright  # only the home PC has a browser installed
+
+    cars = []
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(FB_PROFILE, headless=True, locale="et-EE")
+        try:
+            page = ctx.new_page()
+            listings = {}
+            for term in search_terms(searches):
+                page.goto(f"https://www.facebook.com/marketplace/tallinn/search/?query={requests.utils.quote(term)}",
+                          wait_until="domcontentloaded")
+                page.wait_for_timeout(4000)
+                if not any(c["name"] == "c_user" for c in ctx.cookies()):
+                    raise RuntimeError("Facebook login has expired: run fb_login.py again")
+                for _ in range(2):  # a couple of scrolls loads ~50 newest results
+                    page.mouse.wheel(0, 4000)
+                    page.wait_for_timeout(2000)
+                html = page.content()
+                starts = [(m.start(), m.group(1)) for m in FB_ITEM_RE.finditer(html)]
+                for (pos, item_id), nxt in zip(starts, starts[1:] + [(len(html), None)]):
+                    chunk = html[pos:nxt[0]]
+                    title = fb_field(chunk, r'"marketplace_listing_title":"((?:[^"\\]|\\.)*)"')
+                    if title and f"facebook:{item_id}" not in seen:
+                        listings[item_id] = (title, chunk)
+            # Only open ads whose title names a wanted model; the rest are remembered and skipped.
+            opened = 0
+            for item_id, (title, chunk) in listings.items():
+                key = f"facebook:{item_id}"
+                if not any(names_model(title, mm["make"], mm["model"]) for s in searches for mm in s["models"]):
+                    seen[key] = {"first_seen": datetime.now(timezone.utc).isoformat(), "alerted": []}
+                    continue
+                if opened >= FB_ITEM_LIMIT:
+                    continue  # picked up next run
+                opened += 1
+                url = f"https://www.facebook.com/marketplace/item/{item_id}/"
+                page.goto(url, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+                main = page.query_selector('[role="main"]')
+                text = main.inner_text() if main else ""
+                # The seller's own text sits between these markers; below it are other people's ads.
+                desc = text.split("Seller's description", 1)[-1].split("Location is approximate", 1)[0]
+                subtitle = fb_field(chunk, r'"subtitle":"((?:[^"\\]|\\.)*)"') or ""
+                km = (int(float(m.group(1).replace(",", ".")) * 1000)
+                      if (m := re.search(r"(\d+(?:[.,]\d+)?)\s*K\s*km", subtitle, re.I)) else parse_km(f"{subtitle} {desc}"))
+                blob = f"{title}\n{desc}"
+                cars.append({
+                    "key": key, "source": "facebook", "url": url, "title": title, "name": blob,
+                    "year": first_year(title) or year_in_text(desc),
+                    "fuel": norm_fuel(blob),
+                    "gearbox": norm_gearbox(blob),
+                    "body": norm_body(blob),
+                    "kw": int(m.group(1)) if (m := KW_RE.search(blob)) else None,
+                    "km": km,
+                    "price": parse_int((fb_field(chunk, r'"amount":"([\d.]+)"') or "").split(".")[0]),
+                    "location": fb_field(chunk, r'"city":"((?:[^"\\]|\\.)*)"'),
+                })
+                time.sleep(2)
+        finally:
+            ctx.close()
+    return cars
+
+
+SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal,
+           "facebook": facebook}
 if os.environ.get("SOURCES"):
     SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}
 
@@ -445,6 +537,19 @@ def send_telegram(html):
     r.raise_for_status()
 
 
+def tell_once_a_day(topic, html):
+    """A warning for the group that must not repeat every 30 minutes."""
+    marker = ROOT / f".told-{topic}"
+    today = datetime.now(TALLINN).date().isoformat()
+    if marker.exists() and marker.read_text() == today:
+        return
+    try:
+        send_telegram(html)
+        marker.write_text(today)
+    except requests.RequestException:
+        pass
+
+
 # ---------------------------------------------------------------------------
 def main():
     now = datetime.now(timezone.utc)
@@ -465,6 +570,9 @@ def main():
             except Exception as e:  # one broken site must not stop the others
                 print(f"{name}: FAILED {e!r}")
                 failures.append(name)
+                if name == "facebook" and "login" in str(e):
+                    tell_once_a_day("fb_login", "⚠️ Facebooki sisselogimine aegus. Marketplace'i ei otsita, "
+                                    "kuni teine konto uuesti sisse logib (fb_login.py arvutis).")
                 continue
             for car in cars:
                 seen[car.pop("key")] = {"first_seen": now.isoformat(), "car": car, "alerted": []}
