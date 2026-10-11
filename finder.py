@@ -716,6 +716,9 @@ def deal_line(d):
     if not d:
         return None
     pct, usual, n = d
+    if pct >= 50:
+        return (f"🔥 <b>{pct}% alla tavahinna</b> (sarnased ~{num(usual)} €)\n"
+                "⚠️ Kahtlaselt odav: kontrolli seisukorda (avarii, varuosadeks?)")
     if pct >= 10:
         return f"🔥 <b>{pct}% alla tavahinna</b> (sarnased ~{num(usual)} €, {n} autot)"
     if pct <= -10:
@@ -748,10 +751,26 @@ def alert_text(car, hits, d=None, drop=None, also=()):
     return "\n".join(line for line in lines if line)
 
 
-def telegram(method, **data):
-    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}", timeout=30,
+class TelegramError(requests.RequestException):
+    """Raised instead of HTTPError so the bot token in the URL never ends up in logs."""
+
+
+def telegram(method, files=None, **data):
+    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}", timeout=30, files=files,
                       data={"chat_id": TELEGRAM_CHAT, "parse_mode": "HTML", **data})
-    r.raise_for_status()
+    if not r.ok:
+        raise TelegramError(f"Telegram {method} {r.status_code}: {r.text[:200]}")
+
+
+def as_jpeg(url):
+    """Download a listing photo and re-encode it as JPEG, for hosts or formats (webp) Telegram won't fetch."""
+    from io import BytesIO
+    from PIL import Image
+    img = Image.open(BytesIO(get(url).content)).convert("RGB")
+    img.thumbnail((1280, 1280))
+    out = BytesIO()
+    img.save(out, "JPEG", quality=85)
+    return out.getvalue()
 
 
 def send_telegram(html, image=None):
@@ -763,8 +782,12 @@ def send_telegram(html, image=None):
     if image and len(html) <= 1024:  # photo captions are limited to 1024 characters
         try:
             return telegram("sendPhoto", photo=image, caption=html)
-        except requests.HTTPError as e:
-            print(f"  photo refused ({e}), sending text only")
+        except TelegramError:
+            pass
+        try:
+            return telegram("sendPhoto", files={"photo": ("auto.jpg", as_jpeg(image), "image/jpeg")}, caption=html)
+        except Exception as e:  # a broken photo must never cost us the alert itself
+            print(f"  photo failed ({e}), sending text only")
     telegram("sendMessage", text=html)
 
 
