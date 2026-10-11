@@ -1,6 +1,7 @@
 """Search Estonian car sites for listings that match CRITERIA and push new ones to ntfy."""
 
 import json
+from html import escape as html_escape
 import os
 import re
 import sys
@@ -38,8 +39,15 @@ SEEN_FILE = ROOT / os.environ.get("SEEN_FILE", "seen.json")
 MATCHES_FILE = ROOT / os.environ.get("MATCHES_FILE", "MATCHES.md")
 DRY_RUN = os.environ.get("DRY_RUN") == "true"
 TOPIC_FILE = ROOT / "ntfy_topic.txt"
-NTFY_TOPIC = "" if DRY_RUN else (
-    os.environ.get("NTFY_TOPIC") or (TOPIC_FILE.read_text().strip() if TOPIC_FILE.exists() else ""))
+def setting(name, filename):
+    """A secret from the environment (GitHub) or a git-ignored file next to this script (home PC)."""
+    path = ROOT / filename
+    return os.environ.get(name) or (path.read_text().strip() if path.exists() else "")
+
+
+NTFY_TOPIC = "" if DRY_RUN else setting("NTFY_TOPIC", TOPIC_FILE.name)
+TELEGRAM_TOKEN = setting("TELEGRAM_TOKEN", "telegram_token.txt")
+TELEGRAM_CHAT = "" if DRY_RUN else setting("TELEGRAM_CHAT", "telegram_chat.txt")
 MAX_ALERTS_PER_RUN = 15
 DETAIL_FETCH_LIMIT = 400   # per source per run, keeps the first run polite
 DELAY = 1.0                # seconds between requests to the same site
@@ -364,23 +372,45 @@ def describe(car, unknown):
     return f"{car['title']}\n{line}\n{car['source']}"
 
 
+def send_telegram(html):
+    """Post to the family Telegram group. Returns quietly if Telegram isn't set up."""
+    if not (TELEGRAM_TOKEN and TELEGRAM_CHAT):
+        return
+    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", timeout=20, data={
+        "chat_id": TELEGRAM_CHAT, "text": html, "parse_mode": "HTML", "disable_web_page_preview": "false"})
+    r.raise_for_status()
+
+
 def notify(car, unknown):
-    if not NTFY_TOPIC:
-        print("  (NTFY_TOPIC not set, not sending)")
+    if not (NTFY_TOPIC or TELEGRAM_CHAT):
+        print("  (no notification channel set, not sending)")
         return
     title = f"ALERT: {car.get('year', '')} {car['model']} found".replace("  ", " ")
-    requests.post(
-        f"https://ntfy.sh/{NTFY_TOPIC}",
-        data=describe(car, unknown).encode("utf-8"),
-        headers={"Title": title.encode("utf-8"), "Click": car["url"], "Tags": "rotating_light,red_car", "Priority": "urgent"},
-        timeout=20,
-    )
+    body = describe(car, unknown)
+    # Each channel on its own: one being down must not cost us the other.
+    try:
+        if NTFY_TOPIC:
+            requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=body.encode("utf-8"), timeout=20, headers={
+                "Title": title.encode("utf-8"), "Click": car["url"],
+                "Tags": "rotating_light,red_car", "Priority": "urgent"})
+    except requests.RequestException as e:
+        print(f"  ntfy failed: {e}")
+    try:
+        lines = [html_escape(line) for line in body.split("\n")]
+        send_telegram(f"🚨 <b>{html_escape(title)}</b>\n" + "\n".join(lines)
+                      + f'\n\n<a href="{html_escape(car["url"])}">👉 Ava kuulutus</a>')
+    except requests.RequestException as e:
+        print(f"  telegram failed: {e}")
 
 
 def notify_text(title, message):
-    if NTFY_TOPIC:
-        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"),
-                      headers={"Title": title}, timeout=20)
+    try:
+        if NTFY_TOPIC:
+            requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"),
+                          headers={"Title": title}, timeout=20)
+        send_telegram(f"<b>{html_escape(title)}</b>\n{html_escape(message)}")
+    except requests.RequestException as e:
+        print(f"  notification failed: {e}")
 
 
 def write_matches(seen):

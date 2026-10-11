@@ -31,6 +31,8 @@ jobs:
       - name: Search
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
           DRY_RUN: ${{ inputs.dry_run }}
           SOURCES: autodiiler,autoportaal   # okidoki and soov block GitHub; the home PC searches those
           RUN_ALL_SOURCES: ${{ github.event_name == 'workflow_dispatch' }}
