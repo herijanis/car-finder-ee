@@ -9,5 +9,8 @@ dpkg -s python3-venv >/dev/null 2>&1 || apt-get install -y -q python3-venv
 chmod +x deploy/run-server.sh
 cp deploy/car-finder@.service deploy/car-finder-*.timer /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now car-finder-autoportaal.timer car-finder-autodiiler.timer
+systemctl disable --now car-finder-autoportaal.timer car-finder-autodiiler.timer 2>/dev/null || true
+rm -f /etc/systemd/system/car-finder-autoportaal.timer /etc/systemd/system/car-finder-autodiiler.timer
+systemctl daemon-reload
+systemctl enable --now car-finder-fast.timer car-finder-slow.timer
 systemctl list-timers 'car-finder*' --no-pager

@@ -3,7 +3,7 @@ Description=Car finder: autoportaal every 10 minutes
 
 [Timer]
 OnCalendar=*:0/10
-Unit=car-finder@autoportaal.service
+Unit=car-finder@fast.service
 Persistent=true
 
 [Install]

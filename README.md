@@ -5,7 +5,8 @@ Finds used cars on Estonian sites and posts new matches to the family Telegram g
 - **App:** https://herijanis.github.io/car-finder-ee/ (in `docs/`). Add, change or switch off searches
   from a phone. Editing needs the private setup link once per phone.
 - **Searches:** `searches.json`, written by the app. Several searches can run at once.
-- **Sites:** autodiiler.ee (every 30 min) and autoportaal.ee (every 10 min) from the Hetzner server, 24/7
+- **Sites:** autoportaal.ee (every 10 min) and autodiiler.ee, veego.ee, easycar.ee, longo.ee and
+  oksjonikeskus.ee (every 30 min) from the Hetzner server, 24/7
   (`deploy/`, logs: `journalctl -u "car-finder@*"`).
   okidoki.ee and soov.ee block GitHub, so the home PC searches those (Windows task "Car finder").
   The home PC searches only 08:00-23:00; the server picks up app changes within 10 minutes.

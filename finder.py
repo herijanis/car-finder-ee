@@ -405,6 +405,162 @@ def autoportaal(seen, searches):
     return cars
 
 
+def wanted_makes(searches):
+    return list(dict.fromkeys(mm["make"] for s in searches for mm in s["models"]))
+
+
+def veego(seen, searches):
+    """Open JSON API, mostly dealer stock (Moller, Amserv, Inchcape...). Filtered by make server-side."""
+    api = "https://api.veego.ee/api"
+    names = lambda path: {a["id"]: a["name"] for a in get(f"{api}/attr/vehicles/{path}").json()}
+    fuels, gearboxes, bodies = names("fuels"), names("gearboxes"), names("body-types")
+    make_ids = {slugify(m["name"]): m["id"] for m in get(f"{api}/attr/vehicles/makes").json() if m["group_id"] == 1}
+    cars = []
+    for make in wanted_makes(searches):
+        make_id = make_ids.get(slugify(make))
+        if not make_id:
+            continue
+        page, pages = 1, 1
+        while page <= min(pages, 60):
+            time.sleep(DELAY)
+            r = session.post(f"{api}/search", timeout=30, json={"is_new": 0, "group_id": 1, "page": page, "make_id": make_id})
+            r.raise_for_status()
+            data = r.json()
+            pages = data.get("pages") or 1
+            for v in data.get("results") or []:
+                key = f"veego:{v['id']}"
+                if key in seen:
+                    continue
+                name = f"{v['make']['name']} {v['model']['name']} {v.get('model_name_spec') or ''}".strip()
+                branches = (v.get("company") or {}).get("branches") or []
+                cars.append({
+                    "key": key, "source": "veego", "url": f"https://veego.ee/kasutatud-autod/{v['id']}",
+                    "title": f"{name}, {v['engine_power']} kW" if v.get("engine_power") else name, "name": name,
+                    "year": v.get("year"),
+                    "fuel": norm_fuel(fuels.get(v.get("fuel_id"))),
+                    "gearbox": norm_gearbox(gearboxes.get(v.get("gearbox_id"))),
+                    # veego's "Touring" is what Estonian ads call universaal
+                    "body": "wagon" if bodies.get(v.get("body_type_id")) == "Touring" else norm_body(bodies.get(v.get("body_type_id"))),
+                    "kw": v.get("engine_power"),
+                    "km": v.get("odometer"),
+                    "price": parse_int(str(v.get("discount_price") or v.get("active_price") or v.get("price") or "").split(".")[0]),
+                    "location": (branches[0]["address"].get("city") if branches and branches[0].get("address") else None)
+                                or (v.get("company") or {}).get("name"),
+                })
+            page += 1
+    return cars
+
+
+def nuxt_data(html):
+    """Decode the __NUXT_DATA__ blob Nuxt sites embed: a flat array where values point at other indexes."""
+    m = re.search(r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    raw = json.loads(m.group(1))
+    done = {}
+
+    def resolve(i):
+        if not isinstance(i, int) or not 0 <= i < len(raw):
+            return i
+        if i in done:
+            return done[i]
+        v = raw[i]
+        if isinstance(v, list) and v and v[0] in ("Reactive", "ShallowReactive", "Ref", "ShallowRef"):
+            done[i] = resolve(v[1])
+        elif isinstance(v, list):
+            done[i] = out = []
+            out.extend(resolve(x) for x in v)
+        elif isinstance(v, dict):
+            done[i] = out = {}
+            out.update((k, resolve(x)) for k, x in v.items())
+        else:
+            done[i] = v
+        return done[i]
+    return resolve(0)
+
+
+def easycar(seen, searches):
+    """Dealers and private sellers; no make filter, so read the whole catalogue (~90 pages)."""
+    cars = []
+    for page in range(1, 150):
+        state = nuxt_data(get("https://www.easycar.ee/kataloog", params={"page": page}).text)
+        vehicles = state["pinia"]["vehiclesStore"]["listVehicles"]
+        if not vehicles:
+            break
+        for v in vehicles:
+            key = f"easycar:{v['id']}"
+            if key in seen or v.get("is_sold"):
+                continue
+            name = f"{v.get('make_title')} {v.get('model_title')}"
+            cars.append({
+                "key": key, "source": "easycar", "url": v["url"], "title": f"{name} {v.get('year') or ''}".strip(),
+                "name": name, "year": v.get("year"),
+                "fuel": norm_fuel(v.get("fuel_title")), "gearbox": norm_gearbox(v.get("transmission")),
+                "body": norm_body(v.get("body_type_title")), "kw": v.get("power"), "km": v.get("mileage"),
+                "price": v.get("price"),
+                "location": ((v.get("location") or {}).get("city") or {}).get("name"),
+            })
+    return cars
+
+
+def longo(seen, searches):
+    """Big used-car dealer; the catalogue filters by make."""
+    cars = []
+    for make in wanted_makes(searches):
+        # The catalogue order changes between requests, so paging would skip cars; ask for everything at once.
+        state = nuxt_data(get("https://longo.ee/kataloog", params={"make": make.upper(), "pageSize": 500}).text)
+        for v in state["pinia"]["catalog"]["vehicles"]:
+            key = f"longo:{v['id']}"
+            if key in seen:
+                continue
+            name = f"{v.get('make', '').title()} {v.get('model', '').title()} {v.get('variant') or ''}".strip()
+            slug = re.sub(r"\s+", "-", f"{v.get('make')}-{v.get('model')}-{v.get('year')}")
+            cars.append({
+                "key": key, "source": "longo", "url": f"https://longo.ee/auto/{slug}/{v.get('stockNumber')}",
+                "title": name, "name": name, "year": v.get("year"),
+                "fuel": norm_fuel(v.get("fuelTypeLabel")), "gearbox": norm_gearbox(v.get("transmissionLabel")),
+                "body": norm_body(v.get("bodyType")), "kw": None, "km": v.get("mileage"),
+                "price": v.get("price"), "location": "Longo",
+            })
+    return cars
+
+
+def oksjonikeskus(seen, searches):
+    """Bailiff auctions (a handful of cars, often cheap). Details are free text or a two-column table."""
+    base = "https://www.oksjonikeskus.ee"
+    html = get(base + "/", params={"varaliik": "MS"}).text
+    cars = []
+    for item_id in dict.fromkeys(re.findall(r"okid=(\d+)", html)):
+        key = f"oksjonikeskus:{item_id}"
+        if key in seen:
+            continue
+        url = f"{base}/oksjon/view/?okid={item_id}"
+        try:
+            soup = BeautifulSoup(get(url).text, "html.parser")
+        except requests.RequestException as e:
+            print(f"  oksjonikeskus {item_id}: {e}")
+            continue
+        text = " ".join(soup.get_text(" ", strip=True).split())
+        # Either "Sõiduauto Volvo V50 (universaal; ...; ehitusaasta 2008; kütus diisel; 100 KW; ...)"
+        # or a table: "Mark ja mudel AUDI A6 AVANT Registreerimismärk ... Ehitusaasta / värvus 2012 / must ..."
+        # The heading repeats it as "Sõiduauto Volvo V50 (2008)", so take the longest description.
+        if found := list(re.finditer(r"(Sõiduauto[^()]{0,60})\(([^)]{0,400})\)", text)):
+            m = max(found, key=lambda x: len(x.group(2)))
+            title, spec = m.group(1).strip(), m.group(2)
+        elif m := re.search(r"Mark ja mudel (.{2,60}?) Registreerimismärk", text):
+            title, spec = m.group(1).title(), text[m.start():m.start() + 1500]
+        else:
+            continue  # not a car
+        cars.append({
+            "key": key, "source": "oksjonikeskus (kohtutäituri oksjon)", "url": url, "title": title,
+            "name": f"{title} {spec}",
+            "year": year_in_text(spec) or first_year(title) or (first_year(spec) if len(spec) < 10 else None),
+            "fuel": norm_fuel(spec), "gearbox": norm_gearbox(spec), "body": norm_body(spec),
+            "kw": int(m.group(1)) if (m := KW_RE.search(spec)) else None, "km": parse_km(spec),
+            "price": parse_int(m.group(1)) if (m := re.search(r"Alghind:?\s*([\d\s]+)\s*euro", text, re.I)) else None,
+            "location": None,
+        })
+    return cars
+
+
 FB_PROFILE = ROOT / "fb-profile"   # the spare account's login, made with fb_login.py; never leaves the PC
 FB_ITEM_LIMIT = 10                 # ad pages opened per run: Facebook watches for automated use
 FB_ITEM_RE = re.compile(r'\{"__typename":"GroupCommerceProductItem","id":"(\d+)"')
@@ -483,6 +639,7 @@ def facebook(seen, searches):
 
 
 SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal,
+           "veego": veego, "easycar": easycar, "longo": longo, "oksjonikeskus": oksjonikeskus,
            "facebook": facebook}
 if os.environ.get("SOURCES"):
     SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}

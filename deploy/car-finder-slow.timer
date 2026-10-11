@@ -1,0 +1,10 @@
+[Unit]
+Description=Car finder: autodiiler, veego, easycar, longo, oksjonikeskus every 30 minutes
+
+[Timer]
+OnCalendar=*:05/30
+Unit=car-finder@slow.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
