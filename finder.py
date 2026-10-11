@@ -9,7 +9,7 @@ import sys
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from html import escape as html_escape
+from html import escape as html_escape, unescape as html_unescape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -188,6 +188,13 @@ def parse_int(text):
     return int(digits) if digits else None
 
 
+def og_image(html):
+    """The page's share picture (og:image), which sites set to the car's main photo."""
+    m = (re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
+         or re.search(r'<meta[^>]+content="([^"]+)"[^>]+property="og:image"', html))
+    return html_unescape(m.group(1)) if m else None
+
+
 def first_year(text):
     """First plausible model year; a future year is an inspection date or similar, not the car's age."""
     this_year = datetime.now().year
@@ -259,10 +266,11 @@ def okidoki(seen, searches):
         if len(cars) >= DETAIL_FETCH_LIMIT:
             break
         try:
-            soup = BeautifulSoup(get(url).text, "html.parser")
+            html = get(url).text
         except requests.RequestException as e:
             print(f"  okidoki {item_id}: {e}")
             continue
+        soup = BeautifulSoup(html, "html.parser")
         specs = {}
         for name in soup.select(".item-specific__name"):
             data = name.find_next(class_="item-specific__data")
@@ -284,6 +292,7 @@ def okidoki(seen, searches):
             "km": parse_int(specs.get("läbisõit")) or parse_km(f"{title} {desc}"),
             "price": parse_int(price_el.get_text()) if price_el else None,
             "location": specs.get("asukoht"),
+            "image": m.group(0) if (m := re.search(rf"https://images\.okidoki\.st/{item_id}/\d+_2\.jpg", html)) else None,
         })
     return cars
 
@@ -302,10 +311,11 @@ def soov(seen, searches):
         if len(cars) >= DETAIL_FETCH_LIMIT:
             break
         try:
-            soup = BeautifulSoup(get(url).text, "html.parser")
+            html = get(url).text
         except requests.RequestException as e:
             print(f"  soov {item_id}: {e}")
             continue
+        soup = BeautifulSoup(html, "html.parser")
         title = (soup.find("h1") or soup.find("title")).get_text(" ", strip=True)
         desc_el = soup.find("meta", attrs={"name": "description"})
         desc = desc_el["content"] if desc_el else ""
@@ -321,6 +331,7 @@ def soov(seen, searches):
             "km": parse_km(text),
             "price": price,
             "location": None,
+            "image": og_image(html),
         })
     return cars
 
@@ -330,7 +341,8 @@ AUTODIILER_FUEL = {"diesel": "diesel", "petrol": "petrol", "electric": "electric
 
 
 def autodiiler(seen, searches):
-    """No server-side filters, so read every listing; the API is cheap and complete."""
+    """No server-side filters, so read every listing; the API is cheap and complete.
+    Returns all listings, seen or not, so price changes are noticed."""
     api = "https://garage.autodiiler.ee/api/v1/vehicles"
     cars, page, pages = [], 1, 1
     while page <= pages:
@@ -338,8 +350,6 @@ def autodiiler(seen, searches):
         pages = data["meta"]["pagination"]["total_pages"]
         for v in data["data"]:
             key = f"autodiiler:{v['id']}"
-            if key in seen:
-                continue
             brand = (v.get("brand") or {}).get("name", "")
             model = (v.get("brandModel") or {}).get("name", "")
             cars.append({
@@ -353,6 +363,7 @@ def autodiiler(seen, searches):
                 "km": v.get("mileage"),
                 "price": v.get("price"),
                 "location": v.get("location_name"),
+                "image": (v.get("seo") or {}).get("image"),
             })
         page += 1
     return cars
@@ -380,10 +391,11 @@ def autoportaal(seen, searches):
         if len(cars) >= DETAIL_FETCH_LIMIT:
             break
         try:
-            soup = BeautifulSoup(get(url).text, "html.parser")
+            html = get(url).text
         except requests.RequestException as e:
             print(f"  autoportaal {item_id}: {e}")
             continue
+        soup = BeautifulSoup(html, "html.parser")
         # Specs are rendered as a label line followed by its value line.
         lines = [s.strip() for s in soup.get_text("\n").split("\n") if s.strip()]
         spec = {}
@@ -406,6 +418,7 @@ def autoportaal(seen, searches):
             "km": parse_int(spec.get("läbisõit")),
             "price": price,
             "location": spec.get("asukoht"),
+            "image": og_image(html),
         })
     return cars
 
@@ -415,7 +428,8 @@ def wanted_makes(searches):
 
 
 def veego(seen, searches):
-    """Open JSON API, mostly dealer stock (Moller, Amserv, Inchcape...). Filtered by make server-side."""
+    """Open JSON API, mostly dealer stock (Moller, Amserv, Inchcape...). Filtered by make server-side.
+    Returns all listings, seen or not, so price changes are noticed."""
     api = "https://api.veego.ee/api"
     names = lambda path: {a["id"]: a["name"] for a in get(f"{api}/attr/vehicles/{path}").json()}
     fuels, gearboxes, bodies = names("fuels"), names("gearboxes"), names("body-types")
@@ -434,8 +448,6 @@ def veego(seen, searches):
             pages = data.get("pages") or 1
             for v in data.get("results") or []:
                 key = f"veego:{v['id']}"
-                if key in seen:
-                    continue
                 name = f"{v['make']['name']} {v['model']['name']} {v.get('model_name_spec') or ''}".strip()
                 branches = (v.get("company") or {}).get("branches") or []
                 cars.append({
@@ -451,6 +463,7 @@ def veego(seen, searches):
                     "price": parse_int(str(v.get("discount_price") or v.get("active_price") or v.get("price") or "").split(".")[0]),
                     "location": (branches[0]["address"].get("city") if branches and branches[0].get("address") else None)
                                 or (v.get("company") or {}).get("name"),
+                    "image": (v.get("images") or [{}])[0].get("thumb_data_md"),
                 })
             page += 1
     return cars
@@ -483,7 +496,8 @@ def nuxt_data(html):
 
 
 def easycar(seen, searches):
-    """Dealers and private sellers; no make filter, so read the whole catalogue (~90 pages)."""
+    """Dealers and private sellers; no make filter, so read the whole catalogue (~90 pages).
+    Returns all listings, seen or not, so price changes are noticed."""
     cars = []
     for page in range(1, 150):
         state = nuxt_data(get("https://www.easycar.ee/kataloog", params={"page": page}).text)
@@ -492,7 +506,7 @@ def easycar(seen, searches):
             break
         for v in vehicles:
             key = f"easycar:{v['id']}"
-            if key in seen or v.get("is_sold"):
+            if v.get("is_sold"):
                 continue
             name = f"{v.get('make_title')} {v.get('model_title')}"
             cars.append({
@@ -502,20 +516,19 @@ def easycar(seen, searches):
                 "body": norm_body(v.get("body_type_title")), "kw": v.get("power"), "km": v.get("mileage"),
                 "price": v.get("price"),
                 "location": ((v.get("location") or {}).get("city") or {}).get("name"),
+                "image": next((i.get("original") for i in (v.get("images") or []) if isinstance(i, dict)), None),
             })
     return cars
 
 
 def longo(seen, searches):
-    """Big used-car dealer; the catalogue filters by make."""
+    """Big used-car dealer; the catalogue filters by make. Returns all listings so price changes are noticed."""
     cars = []
     for make in wanted_makes(searches):
         # The catalogue order changes between requests, so paging would skip cars; ask for everything at once.
         state = nuxt_data(get("https://longo.ee/kataloog", params={"make": make.upper(), "pageSize": 500}).text)
         for v in state["pinia"]["catalog"]["vehicles"]:
             key = f"longo:{v['id']}"
-            if key in seen:
-                continue
             name = f"{v.get('make', '').title()} {v.get('model', '').title()} {v.get('variant') or ''}".strip()
             slug = re.sub(r"\s+", "-", f"{v.get('make')}-{v.get('model')}-{v.get('year')}")
             cars.append({
@@ -523,7 +536,7 @@ def longo(seen, searches):
                 "title": name, "name": name, "year": v.get("year"),
                 "fuel": norm_fuel(v.get("fuelTypeLabel")), "gearbox": norm_gearbox(v.get("transmissionLabel")),
                 "body": norm_body(v.get("bodyType")), "kw": None, "km": v.get("mileage"),
-                "price": v.get("price"), "location": "Longo",
+                "price": v.get("price"), "location": "Longo", "image": v.get("thumbnailUrl"),
             })
     return cars
 
@@ -539,10 +552,11 @@ def oksjonikeskus(seen, searches):
             continue
         url = f"{base}/oksjon/view/?okid={item_id}"
         try:
-            soup = BeautifulSoup(get(url).text, "html.parser")
+            html = get(url).text
         except requests.RequestException as e:
             print(f"  oksjonikeskus {item_id}: {e}")
             continue
+        soup = BeautifulSoup(html, "html.parser")
         text = " ".join(soup.get_text(" ", strip=True).split())
         # Either "Sõiduauto Volvo V50 (universaal; ...; ehitusaasta 2008; kütus diisel; 100 KW; ...)"
         # or a table: "Mark ja mudel AUDI A6 AVANT Registreerimismärk ... Ehitusaasta / värvus 2012 / must ..."
@@ -562,6 +576,7 @@ def oksjonikeskus(seen, searches):
             "kw": int(m.group(1)) if (m := KW_RE.search(spec)) else None, "km": parse_km(spec),
             "price": parse_int(m.group(1)) if (m := re.search(r"Alghind:?\s*([\d\s]+)\s*euro", text, re.I)) else None,
             "location": None,
+            "image": og_image(html),
         })
     return cars
 
@@ -578,8 +593,8 @@ def fb_field(chunk, pattern):
 
 def facebook(seen, searches):
     """Marketplace around Tallinn, read as the spare account. Hourly only, and few ad pages per run."""
-    if datetime.now().minute >= 30 and os.environ.get("RUN_ALL_SOURCES") != "true":
-        print("  facebook: only on the first half of the hour")
+    if datetime.now().minute >= 15 and os.environ.get("RUN_ALL_SOURCES") != "true":
+        print("  facebook: only in the first quarter of the hour")
         return []
     from playwright.sync_api import sync_playwright  # only the home PC has a browser installed
 
@@ -636,6 +651,7 @@ def facebook(seen, searches):
                     "km": km,
                     "price": parse_int((fb_field(chunk, r'"amount":"([\d.]+)"') or "").split(".")[0]),
                     "location": fb_field(chunk, r'"city":"((?:[^"\\]|\\.)*)"'),
+                    "image": fb_field(chunk, r'"image":\{"uri":"((?:[^"\\]|\\.)*)"'),
                 })
                 time.sleep(2)
         finally:
@@ -669,8 +685,46 @@ def num(n):
     return f"{n:,}".replace(",", " ")
 
 
-def alert_text(car, hits):
-    """hits: [(search, unknown_fields)]"""
+def matched_model(car, searches):
+    """The (make, model) of the first search model this listing names, used to find similar cars."""
+    return next(((mm["make"], mm["model"]) for s in searches for mm in s["models"]
+                 if names_model(car.get("name"), mm["make"], mm["model"])), None)
+
+
+def deal(car, model, pool):
+    """Compare the price with similar listings: same model, year within 2, similar mileage and power.
+    Returns (percent below the usual price, usual price, how many compared) or None when it can't be
+    judged fairly (mileage unknown, or fewer than 5 similar cars)."""
+    km, kw = car.get("km") or 0, car.get("kw")
+    if not (model and car.get("price") and car.get("year")) or car["price"] < 300 or km < 1000:
+        return None
+    prices = sorted(
+        c["price"] for c in pool
+        if c is not car and c.get("url") != car.get("url") and c.get("price") and c["price"] >= 300
+        and c.get("year") and abs(c["year"] - car["year"]) <= 2
+        and (c.get("km") or 0) >= 1000 and abs(c["km"] - km) <= max(50_000, km * 0.25)
+        and (not (kw and c.get("kw")) or abs(c["kw"] - kw) <= kw * 0.35)
+        and names_model(c.get("name"), *model))
+    if len(prices) < 5:
+        return None
+    mid = len(prices) // 2
+    usual = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
+    return round((usual - car["price"]) / usual * 100), int(usual), len(prices)
+
+
+def deal_line(d):
+    if not d:
+        return None
+    pct, usual, n = d
+    if pct >= 10:
+        return f"🔥 <b>{pct}% alla tavahinna</b> (sarnased ~{num(usual)} €, {n} autot)"
+    if pct <= -10:
+        return f"⬆️ {-pct}% üle tavahinna (sarnased ~{num(usual)} €)"
+    return f"💰 Tavaline hind (sarnased ~{num(usual)} €)"
+
+
+def alert_text(car, hits, d=None, drop=None, also=()):
+    """hits: [(search, unknown_fields)]; d: deal(); drop: {"from", "to"} when the price fell."""
     e = html_escape
     names = ", ".join(s["name"] for s, _ in hits)
     facts = [f"📅 {car['year']}" if car.get("year") else None,
@@ -679,24 +733,39 @@ def alert_text(car, hits):
              f"💶 <b>{num(car['price'])} €</b>" if car.get("price") else None]
     kind = [ET.get(car.get(f)) for f in ("fuel", "gearbox", "body")]
     unknown = sorted({f for _, u in hits for f in u})
-    lines = [f"🚨 <b>{e(names)}</b>", f"<b>{e(car['title'])}</b>",
+    head = f"💸 <b>Hind langes!</b> {e(names)}" if drop else f"🚨 <b>{e(names)}</b>"
+    lines = [head, f"<b>{e(car['title'])}</b>",
              " · ".join(x for x in facts if x),
              " · ".join(x for x in kind if x),
+             f"📉 {num(drop['from'])} € → <b>{num(drop['to'])} €</b>" if drop else None,
+             deal_line(d),
              f"📍 {e(car['location'])} · {car['source']}" if car.get("location") else f"📍 {car['source']}"]
+    if also:
+        lines.append("🔁 Sama auto ka: " + ", ".join(f'<a href="{e(u)}">{e(src)}</a>' for src, u in also))
     if unknown:
         lines.append(f"⚠️ Kuulutuses pole märgitud: {', '.join(ET[f] for f in unknown)}")
     lines.append(f'\n<a href="{e(car["url"])}">👉 Ava kuulutus</a>')
     return "\n".join(line for line in lines if line)
 
 
-def send_telegram(html):
-    """Post to the family Telegram group. Returns quietly if Telegram isn't set up."""
+def telegram(method, **data):
+    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}", timeout=30,
+                      data={"chat_id": TELEGRAM_CHAT, "parse_mode": "HTML", **data})
+    r.raise_for_status()
+
+
+def send_telegram(html, image=None):
+    """Post to the family Telegram group, with the car's photo when there is one.
+    Returns quietly if Telegram isn't set up."""
     if not (TELEGRAM_TOKEN and TELEGRAM_CHAT):
         print("  (Telegram not set up, not sending)")
         return
-    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", timeout=20, data={
-        "chat_id": TELEGRAM_CHAT, "text": html, "parse_mode": "HTML"})
-    r.raise_for_status()
+    if image and len(html) <= 1024:  # photo captions are limited to 1024 characters
+        try:
+            return telegram("sendPhoto", photo=image, caption=html)
+        except requests.HTTPError as e:
+            print(f"  photo refused ({e}), sending text only")
+    telegram("sendMessage", text=html)
 
 
 STATUS_TOKEN = setting("STATUS_TOKEN", "github_token.txt")
@@ -704,31 +773,56 @@ STATUS_NAME = os.environ.get("STATUS_NAME", "pc")  # "server" or "pc": each writ
 STATUS_URL = f"https://api.github.com/repos/herijanis/car-finder-ee/contents/status-{STATUS_NAME}.json"
 
 
-def publish_status(results, known, found):
-    """Tell the app what this machine searched and found. Lives on the "status" branch so it
-    doesn't clutter main or rebuild the app on every run."""
+def put_status_file(name, update):
+    """Read-modify-write one JSON file on the "status" branch (kept off main so the app isn't rebuilt).
+    update(old_dict) returns the new dict."""
     if not STATUS_TOKEN or DRY_RUN:
         return
+    url = f"https://api.github.com/repos/herijanis/car-finder-ee/contents/{name}"
     headers = {"Authorization": f"Bearer {STATUS_TOKEN}", "Accept": "application/vnd.github+json"}
     try:
-        r = requests.get(STATUS_URL, params={"ref": "status"}, headers=headers, timeout=20)
+        r = requests.get(url, params={"ref": "status"}, headers=headers, timeout=20)
         old, sha = {}, None
         if r.status_code == 200:
             sha = r.json()["sha"]
             old = json.loads(base64.b64decode(r.json()["content"]))
-        status = {
-            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "sources": {**old.get("sources", {}), **results},  # the fast and slow runs cover different sites
-            "known": known,
-            "recent": (found + old.get("recent", []))[:30],
-        }
-        body = {"message": f"Status from {STATUS_NAME}", "branch": "status",
-                "content": base64.b64encode(json.dumps(status, ensure_ascii=False).encode()).decode()}
+        body = {"message": f"{name} from {STATUS_NAME}", "branch": "status",
+                "content": base64.b64encode(json.dumps(update(old), ensure_ascii=False).encode()).decode()}
         if sha:
             body["sha"] = sha
-        requests.put(STATUS_URL, headers=headers, json=body, timeout=20).raise_for_status()
+        requests.put(url, headers=headers, json=body, timeout=30).raise_for_status()
     except (requests.RequestException, ValueError, KeyError) as e:
-        print(f"status not published: {e}")
+        print(f"{name} not published: {e}")
+
+
+def publish_status(results, known, found):
+    """Tell the app what this machine searched and found."""
+    put_status_file(f"status-{STATUS_NAME}.json", lambda old: {
+        "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "sources": {**old.get("sources", {}), **results},  # the fast and slow runs cover different sites
+        "known": known,
+        "recent": (found + old.get("recent", []))[:30],
+    })
+
+
+MARKET_URL = "https://raw.githubusercontent.com/herijanis/car-finder-ee/status/market.json"
+
+
+def publish_market(pool, searches):
+    """The server sees most listings; share prices of the wanted models so the PC's deal check has data."""
+    rows = [{k: c.get(k) for k in ("name", "year", "km", "price")} for c in pool
+            if c.get("price") and c.get("year") and matched_model(c, searches)]
+    for r in rows:
+        r["name"] = (r["name"] or "")[:80]
+    put_status_file("market.json", lambda old: {"updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                                "cars": rows})
+
+
+def load_market():
+    try:
+        return requests.get(MARKET_URL, timeout=20).json().get("cars", [])
+    except (requests.RequestException, ValueError):
+        return []
 
 
 def tell_once_a_day(topic, html):
@@ -757,6 +851,7 @@ def main():
     seen = json.loads(SEEN_FILE.read_text(encoding="utf-8")) if SEEN_FILE.exists() else {}
 
     failures, results = [], {}
+    stamp = now.isoformat()
     if searches:
         for name, fn in SOURCES.items():
             print(f"{name}: searching")
@@ -770,41 +865,87 @@ def main():
                     tell_once_a_day("fb_login", "⚠️ Facebooki sisselogimine aegus. Marketplace'i ei otsita, "
                                     "kuni teine konto uuesti sisse logib (fb_login.py arvutis).")
                 continue
+            new = 0
             for car in cars:
-                seen[car.pop("key")] = {"first_seen": now.isoformat(), "car": car, "alerted": []}
-            print(f"{name}: {len(cars)} new listings")
-            results[name] = {"ok": True, "new": len(cars), "at": now.isoformat(timespec="seconds")}
+                key = car.pop("key")
+                entry = seen.get(key)
+                if entry is None:
+                    seen[key] = {"first_seen": stamp, "last_seen": stamp, "car": car, "alerted": []}
+                    new += 1
+                    continue
+                # Listing seen before: some sites list everything each time, which lets us spot price drops.
+                old = (entry.get("car") or {}).get("price")
+                if old and car.get("price") and car["price"] <= old * 0.97 and old - car["price"] >= 100:
+                    entry.setdefault("drops", []).append({"from": old, "to": car["price"], "at": stamp})
+                    print(f"  price drop {old} -> {car['price']}: {car['url']}")
+                entry["car"] = {**(entry.get("car") or {}), **{k: v for k, v in car.items() if v is not None}}
+                entry["last_seen"] = stamp
+            print(f"{name}: {new} new listings ({len(cars)} read)")
+            results[name] = {"ok": True, "new": new, "at": now.isoformat(timespec="seconds")}
 
-    # Check every recent listing against every search, so a search added in the app
-    # also finds cars that were already listed. Each car is sent once per search.
-    recent = (now - timedelta(days=RECHECK_DAYS)).isoformat()
+    pool = [e["car"] for e in seen.values() if "car" in e]
+    market = pool + (load_market() if STATUS_NAME != "server" else [])
+
+    # Check every recent listing against every search, so a search added in the app also finds cars
+    # already listed. A new match is sent once per search; a later price drop is sent again.
+    recent, alive = (now - timedelta(days=RECHECK_DAYS)).isoformat(), (now - timedelta(days=2)).isoformat()
     pending = []
     for key, entry in seen.items():
-        if "car" not in entry or entry["first_seen"] < recent:
+        if "car" not in entry or (entry["first_seen"] < recent and entry.get("last_seen", "") < alive):
             continue
-        hits = [(s, unknown) for s in searches if s["id"] not in entry["alerted"]
-                for ok, unknown in [check(entry["car"], s)] if ok]
-        if hits:
-            pending.append((entry, hits))
-    pending.sort(key=lambda p: p[0]["first_seen"], reverse=True)
+        matches = [(s, unknown) for s in searches for ok, unknown in [check(entry["car"], s)] if ok]
+        fresh = [(s, u) for s, u in matches if s["id"] not in entry["alerted"]]
+        drop = (entry.get("drops") or [None])[-1]
+        dropped = [(s, u) for s, u in matches if s["id"] in entry["alerted"]] if (
+            drop and drop["to"] != entry.get("drop_alerted") and drop["at"] >= alive) else []
+        if fresh:
+            pending.append((key, entry, fresh, drop if drop and drop["at"] >= alive else None))
+        elif dropped:
+            pending.append((key, entry, dropped, drop))
+    pending.sort(key=lambda p: p[1]["first_seen"], reverse=True)
+
+    # The same car is often listed on several dealer sites: send it once, mentioning the others.
+    def fingerprint(car):
+        return (car.get("year"), car.get("km")) if car.get("year") and (car.get("km") or 0) >= 1000 else None
+    told = {}
+    for key, entry in seen.items():
+        if entry.get("alerted") and "car" in entry and (fp := fingerprint(entry["car"])):
+            told.setdefault(fp, set()).update(entry["alerted"])
 
     sent, found = 0, []
-    for entry, hits in pending[:MAX_ALERTS_PER_RUN]:
-        print(f"MATCH {entry['car']['url']} for {[s['name'] for s, _ in hits]}")
+    for key, entry, hits, drop in pending:
+        car = entry["car"]
+        fp = fingerprint(car)
+        model = matched_model(car, searches)
+        if fp and not drop and all(s["id"] in told.get(fp, ()) for s, _ in hits) and model:
+            print(f"  duplicate of an already sent car, skipped: {car['url']}")
+            entry["alerted"] += [s["id"] for s, _ in hits]
+            continue
+        if sent >= MAX_ALERTS_PER_RUN:
+            break
+        also = [(e["car"]["source"], e["car"]["url"]) for k, e, _, _ in pending
+                if k != key and fp and fingerprint(e["car"]) == fp and e["car"]["source"] != car["source"]]
+        d = deal(car, model, market)
+        print(f"{'DROP' if drop else 'MATCH'} {car['url']} for {[s['name'] for s, _ in hits]} deal={d}")
         try:
-            send_telegram(alert_text(entry["car"], hits))
+            send_telegram(alert_text(car, hits, d, drop, also), car.get("image"))
         except requests.RequestException as e:
             print(f"  telegram failed, will retry next run: {e}")
             continue
         if not DRY_RUN:
-            entry["alerted"] += [s["id"] for s, _ in hits]
+            entry["alerted"] += [s["id"] for s, _ in hits if s["id"] not in entry["alerted"]]
+            if drop:
+                entry["drop_alerted"] = drop["to"]
+            if fp:
+                told.setdefault(fp, set()).update(entry["alerted"])
         sent += 1
-        car = entry["car"]
-        found.append({k: car.get(k) for k in ("title", "year", "km", "kw", "price", "fuel", "gearbox", "location", "source", "url")}
-                     | {"searches": [s["name"] for s, _ in hits], "at": now.isoformat(timespec="seconds")})
-        time.sleep(1)
-    if len(pending) > MAX_ALERTS_PER_RUN:
-        print(f"{len(pending) - MAX_ALERTS_PER_RUN} more matches wait for the next run")
+        found.append({k: car.get(k) for k in ("title", "year", "km", "kw", "price", "fuel", "gearbox",
+                                               "location", "source", "url", "image")}
+                     | {"searches": [s["name"] for s, _ in hits], "at": now.isoformat(timespec="seconds"),
+                        "deal": d[0] if d else None, "drop": drop})
+        time.sleep(1.5)
+    if len(pending) > sent:
+        print(f"{len(pending) - sent} more matches wait for the next run")
     if searches and len(failures) == len(SOURCES) and local.hour == 9 and local.minute < 30:
         try:
             send_telegram(f"⚠️ Autootsing ei saanud täna hommikul ühtegi saiti lugeda: {', '.join(failures)}")
@@ -812,9 +953,11 @@ def main():
             pass
 
     forget = (now - timedelta(days=FORGET_DAYS)).isoformat()
-    seen = {k: v for k, v in seen.items() if v["first_seen"] >= forget}
+    seen = {k: v for k, v in seen.items() if max(v["first_seen"], v.get("last_seen", "")) >= forget}
     SEEN_FILE.write_text(json.dumps(seen, ensure_ascii=False, indent=0, sort_keys=True), encoding="utf-8")
-    publish_status(results, sum(1 for v in seen.values() if "car" in v), found)
+    publish_status(results, len(pool), found)
+    if STATUS_NAME == "server" and local.minute < 10:  # an hourly sample is plenty for price comparisons
+        publish_market(pool, searches)
     print(f"sent {sent} alerts")
     return 1 if searches and len(failures) == len(SOURCES) else 0
 

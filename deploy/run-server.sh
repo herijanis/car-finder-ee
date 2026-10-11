@@ -1,10 +1,10 @@
 #!/bin/sh
-# Runs on the Hetzner server from the systemd timers. Argument: "fast" (every 10 min) or "slow" (every 30).
+# Runs on the Hetzner server from the systemd timers. Argument: "fast" (every 5 min) or "slow" (every 15).
 # okidoki, soov and Facebook block server addresses, so the home PC searches those.
 set -e
 case "$1" in
-  fast) SOURCES=autoportaal ;;                                  # cheap: newest-first pages
-  slow) SOURCES=autodiiler,veego,easycar,longo,oksjonikeskus ;; # read whole catalogues
+  fast) SOURCES=autoportaal,veego,longo,oksjonikeskus ;;  # filtered by model or small: a few requests each
+  slow) SOURCES=autodiiler,easycar ;;                     # no filters: whole catalogues, ~100 pages each
   *) echo "usage: run-server.sh fast|slow" >&2; exit 2 ;;
 esac
 cd /opt/car-finder

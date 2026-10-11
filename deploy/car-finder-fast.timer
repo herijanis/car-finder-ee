@@ -1,8 +1,8 @@
 [Unit]
-Description=Car finder: autoportaal every 10 minutes
+Description=Car finder: autoportaal, veego, longo, auctions every 5 minutes
 
 [Timer]
-OnCalendar=*:0/10
+OnCalendar=*:0/5
 Unit=car-finder@fast.service
 Persistent=true
 

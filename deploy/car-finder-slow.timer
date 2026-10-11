@@ -1,8 +1,8 @@
 [Unit]
-Description=Car finder: autodiiler, veego, easycar, longo, oksjonikeskus every 30 minutes
+Description=Car finder: autodiiler and easycar every 15 minutes
 
 [Timer]
-OnCalendar=*:05/30
+OnCalendar=*:02/15
 Unit=car-finder@slow.service
 Persistent=true
 
