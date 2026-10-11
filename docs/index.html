@@ -573,7 +573,8 @@ $("delete").onclick = async () => {
 
 load().catch(() => { $("list").innerHTML = `<div class="empty"><span class="big">📡</span>Ei saanud otsinguid laadida. Kontrolli internetti.</div>`; });
 loadStatus(); setInterval(loadStatus, 120000);
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+// An older version installed an offline worker; remove it so the phone always gets the live app.
+if ("serviceWorker" in navigator) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {});
 </script>
 </body>
 </html>
