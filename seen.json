@@ -85107,6 +85107,42 @@
 },
 "first_seen": "2026-10-11T12:16:03.573880+00:00"
 },
+"autodiiler:80064": {
+"alerted": [],
+"car": {
+"body": "coupe",
+"fuel": "petrol",
+"gearbox": "manual",
+"km": 278000,
+"kw": 125,
+"location": "Tallinn, Eesti",
+"name": "BMW 320 BMW 320 2.0 125kW",
+"price": 7200,
+"source": "autodiiler",
+"title": "BMW 320 2.0 125kW",
+"url": "https://autodiiler.ee/et/vehicles/80064",
+"year": 2007
+},
+"first_seen": "2026-10-11T12:55:32.073449+00:00"
+},
+"autodiiler:80065": {
+"alerted": [],
+"car": {
+"body": "coupe",
+"fuel": "petrol",
+"gearbox": "manual",
+"km": 212620,
+"kw": 105,
+"location": "Tallinn, Eesti",
+"name": "BMW 318 BMW 318 2.0 105kW",
+"price": 1850,
+"source": "autodiiler",
+"title": "BMW 318 2.0 105kW",
+"url": "https://autodiiler.ee/et/vehicles/80065",
+"year": 2001
+},
+"first_seen": "2026-10-11T12:55:32.073449+00:00"
+},
 "autodiiler:8188": {
 "alerted": [],
 "car": {
