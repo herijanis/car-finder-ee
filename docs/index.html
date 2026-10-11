@@ -440,7 +440,7 @@ function render() {
     const req = (s.require || []).map(r => REQUIRE.find(x => x[0] === r)[1].toLowerCase());
     return `<div class="card ${anim("list")} ${s.active === false ? "off" : ""}" style="--i:${i}">
       <div class="row">
-        <div class="grow"><h3>${esc(s.name)}</h3><div class="sub">${s.active === false ? "⏸️ Peatatud" : "🔎 Otsib iga 10–30 min"}</div></div>
+        <div class="grow"><h3>${esc(s.name)}</h3><div class="sub">${s.active === false ? "⏸️ Peatatud" : "🔎 Otsib iga 5–15 min"}</div></div>
         <label class="switch" aria-label="Otsing sees"><input type="checkbox" data-toggle="${i}" ${s.active === false ? "" : "checked"}><span></span></label>
       </div>
       <div class="chips">${s.models.map(m => `<span class="chip">${esc(m.make)} ${esc(m.model)}</span>`).join("")}</div>
