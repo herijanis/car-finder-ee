@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -128,7 +129,7 @@ KW_RE = re.compile(r"(\d{2,3})\s*kw\b", re.I)
 KM_RE = re.compile(r"(\d{1,3}(?:[\s. ]?\d{3})+|\d{3,7})\s*(tkm|tuh\.?\s*km|km)\b", re.I)
 # Sellers often write mileage without "km": "Kella peal 391000", "läbisõit 250t", "odomeeter 180 tuh".
 KM_WORDS_RE = re.compile(
-    r"(?:läbisõit|labisoit|kella\s+peal|kellal|näit|odomeeter|sõitnud|mileage)\D{0,15}?"
+    r"(?:läbisõit|labisoit|kella\s+peal|kellal|näit|odomeeter|sõitnud|mileage|пробег)\D{0,15}?"
     r"(\d{1,3}(?:[\s. ]?\d{3})*)\s*(tkm|tuh|t\b|k\b)?", re.I)
 
 
@@ -136,22 +137,23 @@ def norm_fuel(text):
     t = (text or "").lower()
     if re.search(r"hübriid|hybrid", t):
         return "hybrid"
-    if re.search(r"diis|diesel|\btdi\b|\bsdi\b|\btd\b|\bcdi\b|\bhdi\b", t):
+    # "2.7tdi" and "1.9d" are how people write it in free text
+    if re.search(r"diis|diesel|дизел|(?<![a-z])(tdi|sdi|td|tdci|cdi|hdi|crdi|dci|jtd)\b|\d[.,]\d\s?d\b", t):
         return "diesel"
     if re.search(r"elekter|electric|\bev\b", t):
         return "electric"
     if "gaas" in t or "lpg" in t or "cng" in t:
         return "gas"
-    if re.search(r"bensiin|petrol|\btsi\b|\bfsi\b|\bturbo\b", t):
+    if re.search(r"bensiin|petrol|бензин|\btsi\b|\bfsi\b|\bturbo\b", t):
         return "petrol"
     return None
 
 
 def norm_gearbox(text):
     t = (text or "").lower()
-    if re.search(r"manuaal|manual|käsi", t):
+    if re.search(r"manuaal|manual|\bmanu\b|käsi|механик|мануал", t):
         return "manual"
-    if re.search(r"automaat|automatic|tiptronic|multitronic|dsg|poolautomaat", t):
+    if re.search(r"automaat|automatic|tiptronic|multitronic|dsg|poolautomaat|автомат", t):
         return "automatic"
     return None
 
@@ -160,7 +162,7 @@ def norm_body(text):
     t = (text or "").lower()
     # "mahtuniversaal" contains "universaal", so the minivan check comes first
     for body, pattern in [("minivan", r"mahtuniversaal|minivan|kaubik"),
-                          ("wagon", r"universaal|avant|variant|kombi|wagon|touring|estate"),
+                          ("wagon", r"universaal|универсал|avant|variant|kombi|combi|wagon|touring|estate"),
                           ("sedan", r"sedaan|sedan"),
                           ("hatchback", r"luukpära|hatchback|sportback"),
                           ("suv", r"maastur|\bsuv\b|linnamaastur"),
@@ -659,9 +661,140 @@ def facebook(seen, searches):
     return cars
 
 
+# Big public Estonian car-selling groups: public groups can be read without joining.
+FB_GROUPS = ["280583862099320", "815380148537749", "166539493686955", "autodekuulutused", "913677988719827",
+             "676382099154244", "2875444749193919", "1410068545952198", "561363044634707", "215607501962741",
+             "1724846821064042", "1007570493084407", "836933720440660", "audigrupp", "299236203797724"]
+FB_GROUP_DAYS = 3  # older posts are not news any more
+# Posts that are not a whole car for sale: people buying, and parts.
+FB_BUYING_RE = re.compile(r"\b(ostan|ostame|soovin osta|otsin|куплю|выкуп)\b", re.I)
+FB_PARTS_RE = re.compile(r"varuosa|jupi|\bosad\b|osadeks|luuk|rehv|velg|ilukilb|komplekt|stange|kapott|\buks\b|tuled\b"
+                         r"|резин|диск|запчаст|разбор", re.I)
+FB_SELLING_RE = re.compile(r"müü|müün|müüa|müügil|продам|продаю|продается|продаётся|for sale|selling", re.I)
+LOOSE_YEAR_RE = re.compile(r"\b(19[89]\d|20[0-3]\d)\s*a\b", re.I)  # "2004a", common in group posts
+
+
+def loose_year(text):
+    return first_year(m.group(1)) if (m := LOOSE_YEAR_RE.search(text or "")) else None
+
+
+def walk_json(o, fn):
+    if isinstance(o, dict):
+        fn(o)
+        for v in o.values():
+            walk_json(v, fn)
+    elif isinstance(o, list):
+        for v in o:
+            walk_json(v, fn)
+
+
+def fb_group_posts(responses):
+    """Posts from the group feed's GraphQL answers: {post_id: fields}."""
+    nodes = {}
+
+    def grab(d):
+        if isinstance(d.get("post_id"), str) and ("comet_sections" in d or "attachments" in d):
+            nodes.setdefault(d["post_id"], []).append(d)
+    for body in responses:
+        for line in body.splitlines():
+            if line.startswith("{"):
+                try:
+                    walk_json(json.loads(line), grab)
+                except ValueError:
+                    pass
+    posts = {}
+    for pid, parts in nodes.items():
+        f = {"texts": [], "title": None, "price": None, "time": None, "image": None, "url": None}
+
+        def pick(d):
+            if isinstance(m := d.get("message"), dict) and isinstance(m.get("text"), str):
+                f["texts"].append(m["text"])
+            if isinstance(t := d.get("title_with_entities"), dict) and t.get("text") and not f["title"]:
+                f["title"] = t["text"]
+            if isinstance(p := d.get("formatted_price"), dict) and p.get("text") and not f["price"]:
+                f["price"] = p["text"]
+            if isinstance(d.get("creation_time"), int):
+                f["time"] = max(f["time"] or 0, d["creation_time"])
+            for k in ("photo_image", "image"):
+                if isinstance(im := d.get(k), dict) and isinstance(im.get("uri"), str) and not f["image"]:
+                    f["image"] = im["uri"]
+            if isinstance(u := d.get("url"), str) and re.search(r"/groups/[^/]+/(posts|permalink)/\d+", u) and not f["url"]:
+                f["url"] = u
+        for d in parts:
+            walk_json(d, pick)
+        if f["url"] and f["time"]:  # shared copies of a post have neither
+            f["text"] = max(f["texts"], key=len, default="")
+            posts[pid] = f
+    return posts
+
+
+def facebook_groups(seen, searches):
+    """Car-selling groups, read as the spare account from the feed itself (no post pages opened).
+    Hourly in the third quarter of the hour, so it never runs together with Marketplace."""
+    if not 30 <= datetime.now().minute < 45 and os.environ.get("RUN_ALL_SOURCES") != "true":
+        print("  facebook_groups: only in the third quarter of the hour")
+        return []
+    from playwright.sync_api import sync_playwright
+
+    oldest = time.time() - FB_GROUP_DAYS * 86400
+    cars = []
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(FB_PROFILE, headless=True, locale="et-EE",
+                                                   viewport={"width": 1280, "height": 1600})
+        try:
+            page = ctx.new_page()
+            responses = []
+
+            def keep(r):
+                if "/api/graphql" in r.url:
+                    try:
+                        responses.append(r.text())
+                    except Exception:
+                        pass
+            page.on("response", keep)
+            for group in FB_GROUPS:
+                responses.clear()
+                page.goto(f"https://www.facebook.com/groups/{group}/?sorting_setting=CHRONOLOGICAL",
+                          wait_until="domcontentloaded")
+                page.wait_for_timeout(5000)
+                if not any(c["name"] == "c_user" for c in ctx.cookies()):
+                    raise RuntimeError("Facebook login has expired: run fb_login.py again")
+                for _ in range(2):  # ~25 newest posts; a busy group gets ~4 an hour
+                    page.keyboard.press("End")
+                    page.wait_for_timeout(3000)
+                posts = fb_group_posts(responses + [page.content()])
+                print(f"  group {group}: {len(posts)} posts")
+                for pid, f in posts.items():
+                    title, text = f["title"] or "", f["text"][:1500]
+                    head = f"{title}\n{text[:80]}"
+                    if f["time"] < oldest or FB_BUYING_RE.search(head) or FB_PARTS_RE.search(title):
+                        continue
+                    price = parse_int(f["price"])
+                    if (price is not None and price < 100) or (price is None and not FB_SELLING_RE.search(head)):
+                        continue  # parts, or a question rather than a car for sale
+                    blob = f"{title}\n{text}"
+                    cars.append({
+                        "key": f"fbgroups:{pid}", "source": "FB grupp", "url": f["url"], "title": title or text[:80],
+                        "name": blob,
+                        "year": first_year(title) or loose_year(title) or year_in_text(text) or loose_year(text),
+                        "fuel": norm_fuel(blob),
+                        "gearbox": norm_gearbox(blob),
+                        "body": norm_body(blob),
+                        "kw": int(m.group(1)) if (m := KW_RE.search(blob)) else None,
+                        "km": km if (km := parse_km(blob)) and km >= 1000 else None,
+                        "price": price,
+                        "location": None,
+                        "image": f["image"],
+                    })
+                page.wait_for_timeout(random.randint(4000, 9000))  # unhurried, like a person
+        finally:
+            ctx.close()
+    return cars
+
+
 SOURCES = {"okidoki": okidoki, "soov": soov, "autodiiler": autodiiler, "autoportaal": autoportaal,
            "veego": veego, "easycar": easycar, "longo": longo, "oksjonikeskus": oksjonikeskus,
-           "facebook": facebook}
+           "facebook": facebook, "facebook_groups": facebook_groups}
 if os.environ.get("SOURCES"):
     SOURCES = {name: SOURCES[name] for name in os.environ["SOURCES"].split(",")}
 
@@ -884,7 +1017,7 @@ def main():
                 print(f"{name}: FAILED {e!r}")
                 failures.append(name)
                 results[name] = {"ok": False, "at": now.isoformat(timespec="seconds")}
-                if name == "facebook" and "login" in str(e):
+                if name.startswith("facebook") and "login" in str(e):
                     tell_once_a_day("fb_login", "⚠️ Facebooki sisselogimine aegus. Marketplace'i ei otsita, "
                                     "kuni teine konto uuesti sisse logib (fb_login.py arvutis).")
                 continue
