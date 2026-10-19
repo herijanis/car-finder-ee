@@ -230,10 +230,18 @@ RULES = [  # (car field, check, search keys it needs)
 ]
 
 
+PARTS_TITLE_RE = re.compile(r"varuosa|\bosad\b|osadeks|osadena|lammut|velg|velj|rehv|\d{2}\s*tolli|\d\s*x\s*1[0-2]\d\b"
+                            r"|\bR1[3-9]\b|ilukilb|stange|kapott|\buks\b|tuled\b|esituli|tagatuli|peegel|käigukast\b"
+                            r"|резин|диск|запчаст|разбор", re.I)
+
+
 def check(car, search):
     """Return (is_match, fields the ad doesn't state). A stated value that fails any rule rejects the car,
     and so does a missing one the search marks as required ("require" in the app)."""
     if not any(names_model(car.get("name"), mm["make"], mm["model"]) for mm in search["models"]):
+        return False, []
+    # Parts ads ("BMW X5 E53 veljed + talverehvid") name the model too. A whole car states its km; parts don't.
+    if PARTS_TITLE_RE.search(car.get("title") or car.get("name") or "") and car.get("km") is None:
         return False, []
     unknown = []
     for field, ok, keys in RULES:
