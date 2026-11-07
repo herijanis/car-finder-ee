@@ -38,7 +38,7 @@ TELEGRAM_TOKEN = setting("TELEGRAM_TOKEN", "telegram_token.txt")
 TELEGRAM_CHAT = "" if DRY_RUN else setting("TELEGRAM_CHAT", "telegram_chat.txt")
 MAX_ALERTS_PER_RUN = 15    # Telegram allows ~20 messages a minute in a group; the rest wait for the next run
 DETAIL_FETCH_LIMIT = 400   # per source per run, keeps the first run polite
-RECHECK_DAYS = 30          # known listings this recent are re-checked when a search is added or changed
+RECHECK_DAYS = 2           # listings seen this recently are re-checked when a search is added or changed
 FORGET_DAYS = 120
 DELAY = 1.0                # seconds between requests to the same site
 TALLINN = ZoneInfo("Europe/Tallinn")
@@ -252,8 +252,9 @@ def check(car, search):
             unknown.append(field)
         elif not ok(v, search):
             return False, []
-    # Year is essential: without it almost any matching model would slip through.
-    if "year" in unknown or set(unknown) & set(search.get("require") or []):
+    # Year is essential: without it almost any matching model would slip through. So is the price when the
+    # search limits it: parts ads and "we buy cars" posts usually state none.
+    if {"year", "price"} & set(unknown) or set(unknown) & set(search.get("require") or []):
         return False, []
     return True, unknown
 
@@ -330,7 +331,10 @@ def soov(seen, searches):
         desc_el = soup.find("meta", attrs={"name": "description"})
         desc = desc_el["content"] if desc_el else ""
         text = f"{title}\n{desc}"
-        price = parse_int(m.group(1)) if (m := re.search(r"(\d[\d\s]{1,7})\s*(€|eur)", text, re.I)) else None
+        if m := re.search(r"märgitud hind on <strong>([\d\s]+)", html):
+            price = parse_int(m.group(1))
+        else:
+            price = parse_int(m.group(1)) if (m := re.search(r"(\d[\d\s]{1,7})\s*(€|eur)", text, re.I)) else None
         cars.append({
             "key": key, "source": "soov", "url": url, "title": title, "name": text,
             "year": first_year(title) or first_year(desc),
@@ -601,6 +605,10 @@ def fb_field(chunk, pattern):
     return json.loads(f'"{m.group(1)}"') if m else None
 
 
+# the logged-in profile is kept, but Chrome's cache in it had no limit (fb-profile was 232 MB on 2026-10-25)
+FB_ARGS = ["--disk-cache-size=52428800"]
+
+
 def facebook(seen, searches):
     """Marketplace around Tallinn, read as the spare account. Hourly only, and few ad pages per run."""
     if datetime.now().minute >= 15 and os.environ.get("RUN_ALL_SOURCES") != "true":
@@ -610,7 +618,7 @@ def facebook(seen, searches):
 
     cars = []
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(FB_PROFILE, headless=True, locale="et-EE")
+        ctx = p.chromium.launch_persistent_context(FB_PROFILE, headless=True, locale="et-EE", args=FB_ARGS)
         try:
             page = ctx.new_page()
             listings = {}
@@ -712,7 +720,7 @@ def fb_group_posts(responses):
                     pass
     posts = {}
     for pid, parts in nodes.items():
-        f = {"texts": [], "title": None, "price": None, "time": None, "image": None, "url": None}
+        f = {"texts": [], "title": None, "price": None, "time": None, "image": None, "url": None, "item": None}
 
         def pick(d):
             if isinstance(m := d.get("message"), dict) and isinstance(m.get("text"), str):
@@ -721,6 +729,8 @@ def fb_group_posts(responses):
                 f["title"] = t["text"]
             if isinstance(p := d.get("formatted_price"), dict) and p.get("text") and not f["price"]:
                 f["price"] = p["text"]
+            if d.get("__typename") == "GroupCommerceProductItem" and isinstance(d.get("id"), str) and not f["item"]:
+                f["item"] = d["id"]
             if isinstance(d.get("creation_time"), int):
                 f["time"] = max(f["time"] or 0, d["creation_time"])
             for k in ("photo_image", "image"):
@@ -732,6 +742,8 @@ def fb_group_posts(responses):
             walk_json(d, pick)
         if f["url"] and f["time"]:  # shared copies of a post have neither
             f["text"] = max(f["texts"], key=len, default="")
+            if f["item"]:  # a sale post's own link opens the group feed, its listing page shows the ad
+                f["url"] = f"https://www.facebook.com/marketplace/item/{f['item']}/"
             posts[pid] = f
     return posts
 
@@ -747,7 +759,7 @@ def facebook_groups(seen, searches):
     oldest = time.time() - FB_GROUP_DAYS * 86400
     cars = []
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(FB_PROFILE, headless=True, locale="et-EE",
+        ctx = p.chromium.launch_persistent_context(FB_PROFILE, headless=True, locale="et-EE", args=FB_ARGS,
                                                    viewport={"width": 1280, "height": 1600})
         try:
             page = ctx.new_page()
@@ -1052,10 +1064,12 @@ def main():
 
     # Check every recent listing against every search, so a search added in the app also finds cars
     # already listed. A new match is sent once per search; a later price drop is sent again.
-    recent, alive = (now - timedelta(days=RECHECK_DAYS)).isoformat(), (now - timedelta(days=2)).isoformat()
+    alive = (now - timedelta(days=RECHECK_DAYS)).isoformat()
     pending = []
     for key, entry in seen.items():
-        if "car" not in entry or (entry["first_seen"] < recent and entry.get("last_seen", "") < alive):
+        # Only listings known to be up: just found, or still listed by a site we read in full. An older ad
+        # from a site read only once may be sold already, so a new search doesn't dig those up.
+        if "car" not in entry or max(entry["first_seen"], entry.get("last_seen", "")) < alive:
             continue
         matches = [(s, unknown) for s in searches for ok, unknown in [check(entry["car"], s)] if ok]
         fresh = [(s, u) for s, u in matches if s["id"] not in entry["alerted"]]
@@ -1070,7 +1084,10 @@ def main():
 
     # The same car is often listed on several dealer sites: send it once, mentioning the others.
     def fingerprint(car):
-        return (car.get("year"), car.get("km")) if car.get("year") and (car.get("km") or 0) >= 1000 else None
+        if car.get("year") and (car.get("km") or 0) >= 1000:
+            return car.get("year"), car.get("km")
+        # The same Facebook ad is often posted to several groups.
+        return (car.get("title", "").strip().lower(), car.get("price")) if car.get("price") and car.get("title") else None
     told = {}
     for key, entry in seen.items():
         if entry.get("alerted") and "car" in entry and (fp := fingerprint(entry["car"])):
@@ -1107,7 +1124,7 @@ def main():
                                                "location", "source", "url", "image")}
                      | {"searches": [s["name"] for s, _ in hits], "at": now.isoformat(timespec="seconds"),
                         "deal": d[0] if d else None, "drop": drop})
-        time.sleep(1.5)
+        time.sleep(3.5)  # Telegram allows ~20 messages a minute in a group
     if len(pending) > sent:
         print(f"{len(pending) - sent} more matches wait for the next run")
     if searches and len(failures) == len(SOURCES) and local.hour == 9 and local.minute < 30:
