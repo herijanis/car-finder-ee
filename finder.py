@@ -230,6 +230,15 @@ RULES = [  # (car field, check, search keys it needs)
 ]
 
 
+# Sellers the family never wants to hear about (dealer ads with "from 999 €" bait prices).
+BLOCKED_SELLERS_RE = re.compile(r"balticar", re.I)
+
+
+def seller_of(html):
+    """The seller's name when it is a blocked one; site pages name the seller in the ad text."""
+    return m.group(0) if (m := BLOCKED_SELLERS_RE.search(html or "")) else None
+
+
 PARTS_TITLE_RE = re.compile(r"varuosa|\bosad\b|osadeks|osadena|lammut|velg|velj|rehv|\d{2}\s*tolli|\d\s*x\s*1[0-2]\d\b"
                             r"|\bR1[3-9]\b|ilukilb|stange|kapott|\buks\b|tuled\b|esituli|tagatuli|peegel|käigukast\b"
                             r"|резин|диск|запчаст|разбор", re.I)
@@ -239,6 +248,8 @@ def check(car, search):
     """Return (is_match, fields the ad doesn't state). A stated value that fails any rule rejects the car,
     and so does a missing one the search marks as required ("require" in the app)."""
     if not any(names_model(car.get("name"), mm["make"], mm["model"]) for mm in search["models"]):
+        return False, []
+    if any(BLOCKED_SELLERS_RE.search(v) for v in car.values() if isinstance(v, str)):
         return False, []
     # Parts ads ("BMW X5 E53 veljed + talverehvid") name the model too. A whole car states its km; parts don't.
     if PARTS_TITLE_RE.search(car.get("title") or car.get("name") or "") and car.get("km") is None:
@@ -304,6 +315,7 @@ def okidoki(seen, searches):
             "price": parse_int(price_el.get_text()) if price_el else None,
             "location": specs.get("asukoht"),
             "image": m.group(0) if (m := re.search(rf"https://images\.okidoki\.st/{item_id}/\d+_2\.jpg", html)) else None,
+            "seller": seller_of(html),
         })
     return cars
 
@@ -346,6 +358,7 @@ def soov(seen, searches):
             "price": price,
             "location": None,
             "image": og_image(html),
+            "seller": seller_of(html),
         })
     return cars
 
@@ -433,6 +446,7 @@ def autoportaal(seen, searches):
             "price": price,
             "location": spec.get("asukoht"),
             "image": og_image(html),
+            "seller": seller_of(html),
         })
     return cars
 
@@ -591,6 +605,7 @@ def oksjonikeskus(seen, searches):
             "price": parse_int(m.group(1)) if (m := re.search(r"Alghind:?\s*([\d\s]+)\s*euro", text, re.I)) else None,
             "location": None,
             "image": og_image(html),
+            "seller": seller_of(html),
         })
     return cars
 
