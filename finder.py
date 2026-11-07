@@ -239,6 +239,10 @@ def seller_of(html):
     return m.group(0) if (m := BLOCKED_SELLERS_RE.search(html or "")) else None
 
 
+# "Ostan BMW X5" is someone who wants to buy one.
+BUYING_RE = re.compile(r"\b(ostan|ostame|soovin osta|куплю|покупаю)\b", re.I)
+
+
 PARTS_TITLE_RE = re.compile(r"varuosa|\bosad\b|osadeks|osadena|lammut|velg|velj|rehv|\d{2}\s*tolli|\d\s*x\s*1[0-2]\d\b"
                             r"|\bR1[3-9]\b|ilukilb|stange|kapott|\buks\b|tuled\b|esituli|tagatuli|peegel|käigukast\b"
                             r"|резин|диск|запчаст|разбор", re.I)
@@ -251,6 +255,8 @@ def check(car, search):
         return False, []
     if any(BLOCKED_SELLERS_RE.search(v) for v in car.values() if isinstance(v, str)):
         return False, []
+    if BUYING_RE.search(f"{car.get('title') or ''} {car.get('name') or ''}"):
+        return False, []  # someone buying a car, not selling one
     # Parts ads ("BMW X5 E53 veljed + talverehvid") name the model too. A whole car states its km; parts don't.
     if PARTS_TITLE_RE.search(car.get("title") or car.get("name") or "") and car.get("km") is None:
         return False, []
