@@ -672,10 +672,11 @@ def fb_field(chunk, pattern):
 
 # the logged-in profile is kept, but Chrome's cache in it had no limit (fb-profile was 232 MB on 2026-10-25)
 FB_ARGS = ["--disk-cache-size=52428800"]
+FB_RADIUS_KM = 500  # all of Estonia from Tallinn
 
 
 def facebook(seen, searches):
-    """Marketplace around Tallinn, read as the spare account. Hourly only, and few ad pages per run."""
+    """Marketplace in all of Estonia, read as the spare account. Hourly only, and few ad pages per run."""
     if datetime.now().minute >= 15 and os.environ.get("RUN_ALL_SOURCES") != "true":
         print("  facebook: only in the first quarter of the hour")
         return []
@@ -688,7 +689,8 @@ def facebook(seen, searches):
             page = ctx.new_page()
             listings = {}
             for term in search_terms(searches):
-                page.goto(f"https://www.facebook.com/marketplace/tallinn/search/?query={requests.utils.quote(term)}",
+                page.goto(f"https://www.facebook.com/marketplace/tallinn/search/?query={requests.utils.quote(term)}"
+                          f"&radius={FB_RADIUS_KM}",
                           wait_until="domcontentloaded")
                 page.wait_for_timeout(4000)
                 if not any(c["name"] == "c_user" for c in ctx.cookies()):
