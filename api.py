@@ -27,7 +27,8 @@ wrong_pins = []
 FUELS = {"any", "diesel", "petrol", "hybrid", "electric", "gas"}
 GEARBOXES = {"any", "manual", "automatic"}
 BODIES = {"wagon", "sedan", "hatchback", "suv", "minivan", "coupe", "cabrio"}
-REQUIRE = {"fuel", "gearbox", "body", "km", "price", "kw"}
+COLORS = {"black", "white", "grey", "blue", "red", "green", "other"}
+REQUIRE = {"fuel", "gearbox", "body", "km", "price", "kw", "color"}
 NUMBERS = {"year_min": (1950, 2035), "year_max": (1950, 2035), "price_min": (0, 10**7), "price_max": (0, 10**7),
            "km_max": (0, 3 * 10**6), "kw_min": (0, 2000), "kw_max": (0, 2000)}
 
@@ -56,6 +57,7 @@ def clean(data):
             "fuel": s.get("fuel") if s.get("fuel") in FUELS else "any",
             "gearbox": s.get("gearbox") if s.get("gearbox") in GEARBOXES else "any",
             "body": [b for b in (s.get("body") if isinstance(s.get("body"), list) else [s.get("body")]) if b in BODIES],
+            "colors": [c for c in (s.get("colors") or []) if c in COLORS],
             "require": [r for r in (s.get("require") or []) if r in REQUIRE],
         }
         if not c["id"]:

@@ -218,6 +218,45 @@ def year_in_text(text):
 # ---------------------------------------------------------------------------
 # Matching
 # ---------------------------------------------------------------------------
+# Paint colours. Sites state them in a "Värv" field; private ads say "must X5" or "musta värvi".
+COLORS = [("black", r"must\w*|black|schwarz\w*|черн\w*|carbon|sapphire|saphir\w*"),
+          ("white", r"valge\w*|white|weiss|бел\w*"),
+          ("grey", r"\w*hall\w*|hõbe\w*|grey|gray|silver|grau|сер\w*|серебр\w*|grafiit\w*|graphite"),
+          ("blue", r"\w*sinine|sinis\w*|blue|blau|син\w*|голуб\w*"),
+          ("red", r"punane|punas\w*|red|rot|красн\w*|bordoo\w*"),
+          ("green", r"\w*roheline|roheli\w*|green|grün|зел\w*"),
+          ("other", r"beež\w*|pruun\w*|kollane|oranž\w*|lilla|kuld\w*|beige|brown|yellow|orange|gold")]
+COLOR_WORD = "|".join(f"(?:{p})" for _, p in COLORS)
+# "must nahk" is black leather inside; only the body colour counts.
+NOT_PAINT = r"(?!\s+(?:nahk|naha\w*|salong\w*|sisu|lagi|velg\w*|velj\w*|interjöör\w*|iste\w*|polster\w*|kardaan\w*|leather|interior|кож\w*|салон\w*))"
+COLOR_IN_TEXT_RE = re.compile(
+    rf"(?:värv(?:us|i)?|colou?r|цвет)\s*[:\-]?\s*(?:on\s+)?({COLOR_WORD})\b"          # "Värv: must"
+    rf"|\b({COLOR_WORD})\s+(?:värv|värvi|värvus\w*|metallik|colou?r)\b"                # "musta värvi"
+    rf"|\b(?:auto|bmw|x5|e53|maastur)\s+on\s+({COLOR_WORD})\b"                          # "auto on must"
+    rf"|\b({COLOR_WORD}){NOT_PAINT}\s+(?:bmw|x5|e53|auto|maastur|джип)\b"              # "must X5"
+    rf"|\b(carbon\s*black|black\s*sapphire|saphirschwarz|sapphire\s*black)", re.I)
+
+
+def norm_color(text):
+    """A site's colour field ("Must (Metallik)", "Helehall") to black/white/grey/..."""
+    t = (text or "").strip().lower()
+    return next((c for c, p in COLORS if re.match(rf"(?:{p})\b", t)), None) if t else None
+
+
+def color_in_text(text):
+    m = COLOR_IN_TEXT_RE.search(text or "")
+    return norm_color(next(g for g in m.groups() if g)) if m else None
+
+
+def page_color(html):
+    """Colour on a listing page: a JSON field ("color":"Hall") or the visible "Värv Must"."""
+    for m in re.finditer(r'"(?:color|colour|color_title|colorName|colorLabel)"\s*:\s*"([^"]{2,30})"', html or ""):
+        if c := norm_color(m.group(1)):
+            return c
+    text = html_unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")))
+    return color_in_text(text)
+
+
 RULES = [  # (car field, check, search keys it needs)
     ("year", lambda v, s: (s.get("year_min") or 0) <= v <= (s.get("year_max") or 9999), ("year_min", "year_max")),
     ("price", lambda v, s: (s.get("price_min") or 0) <= v <= (s.get("price_max") or 10**9), ("price_min", "price_max")),
@@ -227,6 +266,7 @@ RULES = [  # (car field, check, search keys it needs)
     ("gearbox", lambda v, s: v == s["gearbox"], ("gearbox",)),
     # one body type (older searches) or a list of them ticked in the app
     ("body", lambda v, s: v in (s["body"] if isinstance(s["body"], list) else [s["body"]]), ("body",)),
+    ("color", lambda v, s: v in s["colors"], ("colors",)),
 ]
 
 
@@ -308,7 +348,7 @@ def okidoki(seen, searches):
         desc_el = soup.select_one(".item-description-text")
         desc = desc_el.get_text(" ", strip=True) if desc_el else ""
         blob = " ".join([title] + [f"{k} {v}" for k, v in specs.items()])
-        price_el = soup.select_one("[class*=price]")
+        price_el = soup.select_one(".item-price-content") or soup.select_one("[class*=price]")
         cars.append({
             "key": key, "source": "okidoki", "url": url, "title": title,
             "name": f"{specs.get('mark ja mudel', '')} {title}",
@@ -322,6 +362,7 @@ def okidoki(seen, searches):
             "location": specs.get("asukoht"),
             "image": m.group(0) if (m := re.search(rf"https://images\.okidoki\.st/{item_id}/\d+_2\.jpg", html)) else None,
             "seller": seller_of(html),
+            "color": norm_color(specs.get("värv")) or color_in_text(desc),
         })
     return cars
 
@@ -365,6 +406,7 @@ def soov(seen, searches):
             "location": None,
             "image": og_image(html),
             "seller": seller_of(html),
+            "color": color_in_text(text),
         })
     return cars
 
@@ -548,7 +590,7 @@ def easycar(seen, searches):
                 "name": name, "year": v.get("year"),
                 "fuel": norm_fuel(v.get("fuel_title")), "gearbox": norm_gearbox(v.get("transmission")),
                 "body": norm_body(v.get("body_type_title")), "kw": v.get("power"), "km": v.get("mileage"),
-                "price": v.get("price"),
+                "price": v.get("price"), "color": norm_color(v.get("color_title")),
                 "location": ((v.get("location") or {}).get("city") or {}).get("name"),
                 "image": next((i.get("original") for i in (v.get("images") or []) if isinstance(i, dict)), None),
             })
@@ -687,7 +729,7 @@ def facebook(seen, searches):
                     "gearbox": norm_gearbox(blob),
                     "body": norm_body(blob),
                     "kw": int(m.group(1)) if (m := KW_RE.search(blob)) else None,
-                    "km": km,
+                    "km": km, "color": color_in_text(blob),
                     "price": parse_int((fb_field(chunk, r'"amount":"([\d.]+)"') or "").split(".")[0]),
                     "location": fb_field(chunk, r'"city":"((?:[^"\\]|\\.)*)"'),
                     "image": fb_field(chunk, r'"image":\{"uri":"((?:[^"\\]|\\.)*)"'),
@@ -823,6 +865,7 @@ def facebook_groups(seen, searches):
                         "body": norm_body(blob),
                         "kw": int(m.group(1)) if (m := KW_RE.search(blob)) else None,
                         "km": km if (km := parse_km(blob)) and km >= 1000 else None,
+                        "color": color_in_text(blob),
                         "price": price,
                         "location": None,
                         "image": f["image"],
@@ -852,7 +895,9 @@ ET = {"diesel": "diisel", "petrol": "bensiin", "hybrid": "hübriid", "electric":
       "manual": "manuaal", "automatic": "automaat", "wagon": "universaal", "sedan": "sedaan",
       "hatchback": "luukpära", "suv": "maastur", "coupe": "kupee", "cabrio": "kabriolett",
       "minivan": "mahtuniversaal", "year": "aasta", "price": "hind", "km": "läbisõit", "kw": "võimsus",
-      "fuel": "kütus", "gearbox": "käigukast", "body": "keretüüp"}
+      "fuel": "kütus", "gearbox": "käigukast", "body": "keretüüp", "color": "värv",
+      "black": "⚫ must", "white": "⚪ valge", "grey": "🩶 hall/hõbe", "blue": "🔵 sinine", "red": "🔴 punane",
+      "green": "🟢 roheline", "other": "🎨 muu värv"}
 
 
 def num(n):
@@ -908,7 +953,7 @@ def alert_text(car, hits, d=None, drop=None, also=()):
              f"🛣 {num(car['km'])} km" if car.get("km") else None,
              f"⚡ {car['kw']} kW" if car.get("kw") else None,
              f"💶 <b>{num(car['price'])} €</b>" if car.get("price") else None]
-    kind = [ET.get(car.get(f)) for f in ("fuel", "gearbox", "body")]
+    kind = [ET.get(car.get(f)) for f in ("fuel", "gearbox", "body", "color")]
     unknown = sorted({f for _, u in hits for f in u})
     head = f"💸 <b>Hind langes!</b> {e(names)}" if drop else f"🚨 <b>{e(names)}</b>"
     lines = [head, f"<b>{e(car['title'])}</b>",
@@ -1086,13 +1131,24 @@ def main():
     # Check every recent listing against every search, so a search added in the app also finds cars
     # already listed. A new match is sent once per search; a later price drop is sent again.
     alive = (now - timedelta(days=RECHECK_DAYS)).isoformat()
-    pending = []
+    pending, colour_lookups = [], 0
     for key, entry in seen.items():
         # Only listings known to be up: just found, or still listed by a site we read in full. An older ad
         # from a site read only once may be sold already, so a new search doesn't dig those up.
         if "car" not in entry or max(entry["first_seen"], entry.get("last_seen", "")) < alive:
             continue
         matches = [(s, unknown) for s in searches for ok, unknown in [check(entry["car"], s)] if ok]
+        # Some sites show the colour only on the ad page: look once, when a colour search would otherwise match.
+        car = entry["car"]
+        if (any("color" in u for s, u in matches if s["id"] not in entry["alerted"]) and "color_looked" not in car
+                and "facebook.com" not in car["url"] and colour_lookups < 25):
+            colour_lookups += 1
+            try:
+                car["color"] = page_color(get(car["url"]).text)
+            except requests.RequestException as e:
+                print(f"  colour of {car['url']}: {e}")
+            car["color_looked"] = True
+            matches = [(s, unknown) for s in searches for ok, unknown in [check(car, s)] if ok]
         fresh = [(s, u) for s, u in matches if s["id"] not in entry["alerted"]]
         drop = (entry.get("drops") or [None])[-1]
         dropped = [(s, u) for s, u in matches if s["id"] in entry["alerted"]] if (

@@ -285,6 +285,11 @@
         <div class="hint">Vali üks või mitu. Kui ühtegi pole valitud, sobivad kõik.</div>
       </fieldset>
       <fieldset>
+        <legend>🎨 Värv</legend>
+        <div class="checks" id="f-colors"></div>
+        <div class="hint">Vali üks või mitu. Kui värv kuulutuses puudub, tuleb auto ikka (märkega ⚠️).</div>
+      </fieldset>
+      <fieldset>
         <legend>🛡️ Saada ainult siis, kui kuulutuses on kirjas</legend>
         <div class="checks" id="f-require"></div>
         <div class="hint">Muidu tuleb auto ka siis, kui see info kuulutusest puudub (märkega ⚠️).</div>
@@ -326,8 +331,10 @@ const OPTIONS = {
   gearbox: [["any", "Kõik"], ["manual", "Manuaal"], ["automatic", "Automaat"]],
   body: [["wagon", "Universaal"], ["sedan", "Sedaan"], ["hatchback", "Luukpära"], ["suv", "Maastur"],
          ["minivan", "Mahtuniversaal"], ["coupe", "Kupee"], ["cabrio", "Kabriolett"]],
+  colors: [["black", "⚫ Must"], ["white", "⚪ Valge"], ["grey", "🩶 Hall/hõbe"], ["blue", "🔵 Sinine"],
+           ["red", "🔴 Punane"], ["green", "🟢 Roheline"], ["other", "🎨 Muu"]],
 };
-const REQUIRE = [["fuel", "Kütus"], ["gearbox", "Käigukast"], ["body", "Keretüüp"], ["km", "Läbisõit"], ["price", "Hind"], ["kw", "Võimsus"]];
+const REQUIRE = [["fuel", "Kütus"], ["gearbox", "Käigukast"], ["body", "Keretüüp"], ["km", "Läbisõit"], ["price", "Hind"], ["kw", "Võimsus"], ["color", "Värv"]];
 // Older searches store one body type as a string; the app keeps a list.
 const bodies = s => Array.isArray(s.body) ? s.body : (s.body && s.body !== "any" ? [s.body] : []);
 const NUMBERS = ["year_min", "year_max", "price_min", "price_max", "km_max", "kw_min", "kw_max"];
@@ -452,6 +459,7 @@ function render() {
         <div class="spec"><span>⛽ Kütus</span><b>${any("fuel", s.fuel)}</b></div>
         <div class="spec"><span>⚙️ Käigukast</span><b>${any("gearbox", s.gearbox)}</b></div>
         <div class="spec" style="grid-column: 1 / -1"><span>🚙 Keretüüp</span><b>${bodies(s).map(b => label("body", b)).join(", ") || "kõik"}</b></div>
+        ${(s.colors || []).length ? `<div class="spec" style="grid-column: 1 / -1"><span>🎨 Värv</span><b>${s.colors.map(c => label("colors", c)).join(", ")}</b></div>` : ""}
         ${req.length ? `<div class="spec" style="grid-column: 1 / -1"><span>🛡️ Peab olema kirjas</span><b>${esc(req.join(", "))}</b></div>` : ""}
       </div>
       <div class="card-foot">
@@ -533,7 +541,7 @@ function fillChecks(id, options) {
   $(id).innerHTML = options.map(([v, t]) => `<label><input type="checkbox" value="${v}">${t}</label>`).join("");
 }
 fillSeg("f-fuel", "fuel"); fillSeg("f-gearbox", "gearbox");
-fillChecks("f-body", OPTIONS.body); fillChecks("f-require", REQUIRE);
+fillChecks("f-body", OPTIONS.body); fillChecks("f-colors", OPTIONS.colors); fillChecks("f-require", REQUIRE);
 document.querySelectorAll(".seg, .checks").forEach(g => g.addEventListener("change", () => buzz(8)));
 const setChecks = (id, values) => $(id).querySelectorAll("input").forEach(c => c.checked = values.includes(c.value));
 const getChecks = id => [...$(id).querySelectorAll("input:checked")].map(c => c.value);
@@ -559,7 +567,7 @@ async function openEditor(i) {
   $("models").innerHTML = ""; s.models.forEach(modelRow);
   NUMBERS.forEach(k => $("f-" + k).value = s[k] ?? "");
   setChecks("f-fuel", [s.fuel || "any"]); setChecks("f-gearbox", [s.gearbox || "any"]);
-  setChecks("f-body", bodies(s)); setChecks("f-require", s.require || []);
+  setChecks("f-body", bodies(s)); setChecks("f-colors", s.colors || []); setChecks("f-require", s.require || []);
   $("delete").hidden = i === null;
   $("editor").classList.remove("closing");
   $("editor").showModal();
@@ -585,6 +593,7 @@ $("form").addEventListener("submit", async e => {
   s.fuel = getChecks("f-fuel")[0] || "any";
   s.gearbox = getChecks("f-gearbox")[0] || "any";
   s.body = getChecks("f-body");
+  s.colors = getChecks("f-colors");
   s.require = getChecks("f-require");
   const old = data.searches.slice();
   if (editing === null) data.searches.push(s); else data.searches[editing] = s;
