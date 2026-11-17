@@ -225,7 +225,7 @@ COLORS = [("black", r"must\w*|black|schwarz\w*|черн\w*|carbon|sapphire|saphi
           ("blue", r"\w*sinine|sinis\w*|blue|blau|син\w*|голуб\w*"),
           ("red", r"punane|punas\w*|red|rot|красн\w*|bordoo\w*"),
           ("green", r"\w*roheline|roheli\w*|green|grün|зел\w*"),
-          ("other", r"beež\w*|pruun\w*|kollane|oranž\w*|lilla|kuld\w*|beige|brown|yellow|orange|gold")]
+          ("other", r"beež\w*|beez\w*|pruun\w*|kollane|oranž\w*|lilla|kuld\w*|beige|brown|yellow|orange|gold")]
 COLOR_WORD = "|".join(f"(?:{p})" for _, p in COLORS)
 # "must nahk" is black leather inside; only the body colour counts.
 NOT_PAINT = r"(?!\s+(?:nahk|naha\w*|salong\w*|sisu|lagi|velg\w*|velj\w*|interjöör\w*|iste\w*|polster\w*|kardaan\w*|leather|interior|кож\w*|салон\w*))"
@@ -250,10 +250,12 @@ def color_in_text(text):
 
 def page_color(html):
     """Colour on a listing page: a JSON field ("color":"Hall") or the visible "Värv Must"."""
-    for m in re.finditer(r'"(?:color|colour|color_title|colorName|colorLabel)"\s*:\s*"([^"]{2,30})"', html or ""):
-        if c := norm_color(m.group(1)):
-            return c
-    text = html_unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")))
+    # The first such field is the car's own (schema.org data); later ones belong to other ads on the page.
+    if m := re.search(r'"(?:color|colour|color_title|colorName|colorLabel)"\s*:\s*"([^\W\d_][^"]{1,29})"', html or ""):
+        return norm_color(m.group(1)) or "other"
+    # Visible text only: page styles ("--color-gray-50") are not the car's colour.
+    visible = re.sub(r"<(script|style)\b.*?</\1>", " ", html or "", flags=re.S | re.I)
+    text = html_unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", visible)))
     return color_in_text(text)
 
 
